@@ -46,20 +46,27 @@ jobs:
       - name: "Descargar y extraer base nativa de Linux"
         run: |
           echo "Descargando .deb oficial de Linux..."
-          curl -L -o opera-gx-linux.deb "https://download3.operacdn.com/pub/opera_gx/stable/linux"
+          
+          # Usamos la URL de redirección oficial y un User-Agent para evitar bloqueos del CDN
+          curl -L -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+               -o opera-gx-linux.deb "https://www.opera.com/download/gx"
+          
+          echo "Verificando archivo descargado..."
+          file opera-gx-linux.deb
           
           if ! file opera-gx-linux.deb | grep -q "Debian"; then
-            echo "ERROR: El .deb descargado no es válido"
+            echo "ERROR: El .deb descargado no es válido. Es probable que el CDN haya bloqueado la descarga."
+            echo "Contenido del archivo (primeras líneas):"
+            head -n 10 opera-gx-linux.deb
             exit 1
           fi
           
-          echo ".deb válido. Extrayendo..."
+          echo "✅ .deb válido. Extrayendo..."
           mkdir -p linux-base
           dpkg-deb -x opera-gx-linux.deb linux-base/
           
-          echo "Estructura de Linux extraída:"
+          echo "📊 Estructura de Linux extraída:"
           echo "Total de archivos: $(find linux-base/ -type f | wc -l)"
-
       - name: "Fusión Segura (Linux Binarios + Windows Visuales)"
         run: |
           echo "Iniciando fusión segura..."
