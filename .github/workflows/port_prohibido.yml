@@ -127,7 +127,7 @@ jobs:
 
       - name: "Clonar el motor Chromium"
         run: |
-          echo "Descargando codigo fuente oficial de Chromium..."
+          echo "Descargando codigo fuente de Chromium..."
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           export PATH="$PWD/depot_tools:$PATH"
           echo "PATH=$PATH" >> $GITHUB_ENV
