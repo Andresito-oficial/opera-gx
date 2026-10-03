@@ -1,4 +1,4 @@
-name: Port Prohibido - Fusión Nativa (Release Asset + Linux Base)
+name: Port Prohibido - Análisis de opera_gx_splash.exe
 
 on:
   workflow_dispatch:
@@ -7,176 +7,165 @@ permissions:
   contents: write
 
 jobs:
-  fusion-patch:
-    name: "Fusión de Assets y Generación de Patch"
+  analyze-splash-controller:
+    name: "Análisis de opera_gx_splash.exe"
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
     steps:
-      - name: "Descargar assets de Windows desde Release"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: "Instalar herramientas de Reverse Engineering"
         run: |
-          echo "Descargando archivo desde los Releases (con autenticación)..."
-          mkdir -p windows-base
-          
-          # Usar la CLI de GitHub para descargar el asset. 
-          # Busca cualquier archivo .tar.xz en el release "v1.0.0-base"
-          gh release download v1.0.0-base --repo Andresito-oficial/opera-gx --pattern "*.tar.xz" --dir .
-          
-          # Verificar qué se descargó realmente
-          DOWNLOADED_FILE=$(ls *.tar.xz 2>/dev/null | head -n 1)
-          
-          if [ -z "$DOWNLOADED_FILE" ]; then
-            echo "❌ ERROR: No se encontró ningún archivo .tar.xz en el release."
-            echo "Archivos presentes en la carpeta:"
-            ls -la
-            exit 1
-          fi
-          
-          echo "✅ Archivo descargado correctamente: $DOWNLOADED_FILE"
-          echo "Verificando tipo de archivo:"
-          file "$DOWNLOADED_FILE"
-          
-          echo "Extrayendo contenido..."
-          tar -xJf "$DOWNLOADED_FILE" -C windows-base/
-          
-          echo "📊 Estructura de Windows extraída:"
-          echo "Total de archivos: $(find windows-base/ -type f | wc -l)"
-          find windows-base/ -type f | head -n 20
+          sudo apt-get update
+          sudo apt-get install -y radare2 p7zip-full curl jq
 
       - name: "Descargar y extraer base nativa de Linux"
         run: |
-          echo "🔍 Obteniendo la última versión de Opera GX Linux desde el servidor público..."
-          
-          # 1. Detectar dinámicamente la carpeta de la versión más reciente
+          echo "Descargando .deb oficial de Linux..."
           LATEST_VERSION=$(curl -s https://get.opera.com/pub/opera_gx/ | grep -oP 'href="\K[^"]+(?=/")' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          curl -L -o opera-gx-linux.deb "https://get.opera.com/pub/opera_gx/${LATEST_VERSION}/linux/opera-gx-stable_${LATEST_VERSION}_amd64.deb"
           
-          if [ -z "$LATEST_VERSION" ]; then
-            echo "❌ ERROR: No se pudo detectar la versión más reciente."
-            exit 1
-          fi
-          
-          echo "✅ Versión detectada: $LATEST_VERSION"
-          
-          # 2. Construir la URL DIRECTA al archivo .deb (sin redirecciones ni HTML)
-          DEB_URL="https://get.opera.com/pub/opera_gx/${LATEST_VERSION}/linux/opera-gx-stable_${LATEST_VERSION}_amd64.deb"
-          echo "🔗 URL de descarga directa: $DEB_URL"
-          
-          # 3. Descargar el archivo
-          curl -L -o opera-gx-linux.deb "$DEB_URL"
-          
-          echo "Verificando archivo descargado..."
-          file opera-gx-linux.deb
-          
-          # 4. Validar que sea un Debian package real
-          if ! file opera-gx-linux.deb | grep -qi "Debian"; then
-            echo "❌ ERROR: El archivo descargado NO es un .deb válido."
-            echo "Contenido del archivo (primeras líneas):"
-            head -n 10 opera-gx-linux.deb
-            exit 1
-          fi
-          
-          echo "✅ .deb válido confirmado. Extrayendo..."
           mkdir -p linux-base
           dpkg-deb -x opera-gx-linux.deb linux-base/
           
-          echo "📊 Estructura de Linux extraída:"
-          echo "Total de archivos: $(find linux-base/ -type f | wc -l)"
-          
-      - name: "Fusión Segura (Linux Binarios + Windows Visuales)"
-        run: |
-          echo "Iniciando fusión segura..."
-          mkdir -p patch-final
-          
-          # 1. Copiar la base nativa de Linux (binarios, .so, estructura)
-          echo "Copiando base nativa de Linux..."
-          cp -r linux-base/usr patch-final/
-          
-          # 2. Inyectar SOLO assets visuales y de UI desde Windows
-          echo "Inyectando assets visuales de Windows..."
-          
-          # Filtramos por extensiones seguras para NO sobrescribir binarios Linux
-          find windows-base/ -type f \( -name "*.png" -o -name "*.webp" -o -name "*.jpg" -o -name "*.ico" -o -name "*.wav" -o -name "*.mp3" -o -name "*.json" \) | while read file; do
-            filename=$(basename "$file")
-            cp "$file" "patch-final/usr/lib/opera-gx/$filename" 2>/dev/null || true
-          done
-          
-          echo "Fusión completada."
-          echo "Archivos finales en patch-final: $(find patch-final/ -type f | wc -l)"
+          echo "Buscando controlador de splash en Linux..."
+          find linux-base/ -type f -name "*splash*" -o -name "*intro*" -o -name "*startup*" > linux_splash_files.txt
+          echo "Archivos encontrados en Linux:"
+          cat linux_splash_files.txt
 
-      - name: "Generar script de instalación para Arch Linux"
+      - name: "Extraer opera_gx_splash.exe y .mp4 de Windows"
         run: |
-          cat << 'EOF' > patch-final/instalar.sh
-          #!/bin/bash
-          echo "🚫 Port Prohibido - Instalador para Arch Linux"
-          echo "=============================================="
+          echo "Extrayendo OperaGX.tar.xz..."
+          mkdir -p windows-base
+          gh release download v1.0.0-base --repo Andresito-oficial/opera-gx --pattern "*.tar.xz" --dir .
+          tar -xJf OperaGX.tar.xz -C windows-base/
           
-          if [ "$EUID" -ne 0 ]; then
-              echo "❌ Error: Ejecuta con sudo (sudo ./instalar.sh)"
-              exit 1
+          # 1. Buscar opera_gx_splash.exe
+          SPLASH_EXE=$(find windows-base/ -name "opera_gx_splash.exe" -type f | head -n 1)
+          if [ -z "$SPLASH_EXE" ]; then
+            echo "❌ ERROR: No se encontró opera_gx_splash.exe"
+            exit 1
           fi
+          echo "✅ Controlador encontrado: $SPLASH_EXE"
+          echo "SPLASH_EXE=$SPLASH_EXE" >> $GITHUB_ENV
           
-          OPERA_PATH="/usr/lib/opera-gx"
-          if [ ! -d "$OPERA_PATH" ]; then
-              echo "❌ Error: No se encontró Opera GX en $OPERA_PATH"
-              echo "   Asegúrate de haberlo instalado desde AUR (yay -S opera-gx)"
-              exit 1
+          # 2. Buscar el archivo .mp4
+          WIN_MP4=$(find windows-base/ -name "*.mp4" | head -n 1)
+          echo "MP4_ENCONTRADO=$WIN_MP4" >> $GITHUB_ENV
+          
+          # 3. Copiar ambos a la raíz para facilitar el análisis
+          cp "$SPLASH_EXE" ./opera_gx_splash.exe
+          if [ -n "$WIN_MP4" ]; then
+            cp "$WIN_MP4" ./splash.mp4
           fi
-          
-          echo "✅ Opera GX detectado en $OPERA_PATH"
-          echo "📦 Creando backup..."
-          BACKUP="$OPERA_PATH-backup-$(date +%Y%m%d)"
-          sudo cp -r "$OPERA_PATH" "$BACKUP"
-          echo "✅ Backup creado en $BACKUP"
-          
-          echo "🎨 Aplicando assets de Windows (Splash, UI, Sonidos)..."
-          sudo cp -r usr/lib/opera-gx/* "$OPERA_PATH/"
-          
-          echo "✅ ¡Patch aplicado con éxito!"
-          echo "🔄 Reinicia Opera GX para ver los cambios."
-          EOF
-          chmod +x patch-final/instalar.sh
 
-      - name: "Generar INSTRUCCIONES.md"
+      - name: "Descompilar opera_gx_splash.exe con Radare2"
         run: |
-          cat << 'EOF' > patch-final/INSTRUCCIONES.md
-          # 🚫 Port Prohibido - Patch Visual para Opera GX (Arch Linux)
+          echo "Descompilando opera_gx_splash.exe..."
           
-          ## Instalación Rápida
-          ```bash
-          unzip OperaGX-PortProhibido-Patch.zip
-          cd OperaGX-PortProhibido-Patch
-          sudo ./instalar.sh
-          ```
+          # Análisis completo con Radare2
+          r2 -q -e scr.color=0 -c "
+            aaa;
+            afl;
+            pdf @ main;
+          " ./opera_gx_splash.exe > splash_main_decompiled.txt
           
-          ## ¿Qué hace este patch?
-          Reemplaza los assets visuales (Splash screen, iconos, sonidos de UI) de la versión nativa de Linux con los extraídos de la versión completa de Windows, manteniendo los binarios nativos de Linux para máximo rendimiento.
+          # Buscar strings relacionadas con el .mp4 y rutas
+          r2 -q -e scr.color=0 -c "
+            iz;
+            /x 2e6d7034;
+          " ./opera_gx_splash.exe > splash_strings.txt
+          
+          echo "=== Función main descompilada ==="
+          cat splash_main_decompiled.txt
+          echo ""
+          echo "=== Strings encontradas ==="
+          cat splash_strings.txt
+
+      - name: "Analizar con IA y generar estrategia de port"
+        run: |
+          echo "Enviando código descompilado a Qwen para análisis..."
+          
+          CODIGO_MAIN=$(cat splash_main_decompiled.txt | head -n 100)
+          STRINGS=$(cat splash_strings.txt | head -n 50)
+          
+          PROMPT="Analiza este código descompilado de opera_gx_splash.exe (Windows). Es un ejecutable separado que muestra un splash screen en video (.mp4) mientras carga el navegador principal. 
+          
+          Código main: [$CODIGO_MAIN]
+          Strings: [$STRINGS]
+          
+          Preguntas:
+          1. ¿Cómo lanza el video .mp4? (¿DirectShow, Media Foundation, VLC embebido?)
+          2. ¿Cómo se comunica con el binario principal de Opera? (¿Socket, pipe, señal?)
+          3. ¿Qué rutas de archivos usa para encontrar el .mp4?
+          4. ¿Es posible portar esto a Linux nativo? Si sí, ¿qué APIs de Linux reemplazarían las de Windows?
+          
+          Devuelve un análisis técnico detallado y, si es posible, un script en C o Python que reimplemente esta funcionalidad en Linux."
+          
+          RESPONSE=$(curl -s -X POST http://localhost:11434/api/generate -d "{\"model\": \"qwen2.5-coder:7b\", \"prompt\": \"$PROMPT\", \"stream\": false}" | jq -r '.response')
+          echo "$RESPONSE" > analisis_ia.txt
+          
+          echo "=== Análisis de IA ==="
+          cat analisis_ia.txt
+
+      - name: "Comparar con estructura de Linux"
+        run: |
+          echo "Comparando estructura de Windows vs Linux..."
+          
+          # Ver si en Linux existe algo similar
+          LINUX_BIN=$(find linux-base/ -name "opera" -type f -executable | head -n 1)
+          echo "Binario principal de Linux: $LINUX_BIN"
+          
+          # Buscar si hay algún script o binario de splash en Linux
+          LINUX_SPLASH=$(find linux-base/ -type f \( -name "*splash*" -o -name "*intro*" \) | head -n 1)
+          if [ -n "$LINUX_SPLASH" ]; then
+            echo "✅ Existe algo similar en Linux: $LINUX_SPLASH"
+            file "$LINUX_SPLASH"
+          else
+            echo " No existe controlador de splash en Linux. Habrá que crearlo."
+          fi
+
+      - name: "Generar informe y parche"
+        run: |
+          cat << 'EOF' > INFORME_SPLASH_CONTROLLER.md
+          # Análisis de opera_gx_splash.exe
+          
+          ## Hallazgos
+          - El controlador es un ejecutable independiente en Windows.
+          - Archivo .mp4 encontrado: $WIN_MP4
+          - Binario principal de Linux: $LINUX_BIN
+          
+          ## Estrategia de Port
+          Revisa el archivo analisis_ia.txt para ver la estrategia generada por Qwen.
+          
+          ## Próximos Pasos
+          1. Si la IA sugiere reimplementar en C/Python, compilarlo para Linux.
+          2. Inyectar el .mp4 en la carpeta de recursos de Linux.
+          3. Modificar el launcher de Opera en Linux para que llame al nuevo controlador.
           EOF
 
-      - name: "Empaquetar y Publicar Release"
-        run: |
-          cd patch-final
-          zip -r ../OperaGX-PortProhibido-Patch.zip .
-          cd ..
-          
-          echo "ZIP creado:"
-          ls -lh OperaGX-PortProhibido-Patch.zip
-          
-      - name: "Subir Patch a Releases"
+      - name: "Publicar análisis en Release"
         uses: softprops/action-gh-release@v2
         with:
-          files: OperaGX-PortProhibido-Patch.zip
-          tag_name: "patch-fusion-v1.0"
-          name: "🚫 Port Prohibido - Patch de Fusión (Windows Assets + Linux Core)"
+          files: |
+            splash_main_decompiled.txt
+            splash_strings.txt
+            analisis_ia.txt
+            INFORME_SPLASH_CONTROLLER.md
+            linux_splash_files.txt
+          tag_name: "splash-controller-analysis-v1.0"
+          name: "🔍 Análisis de opera_gx_splash.exe"
           body: |
-            ## Patch de Fusión Generado Automáticamente
+            ## Análisis del Controlador de Splash Screen
             
-            Este ZIP contiene la fusión segura entre el núcleo nativo de Linux y los assets visuales de Windows.
+            Este release contiene el análisis completo de `opera_gx_splash.exe` usando Radare2 e IA.
             
-            ### 🚀 Instalación en Arch:
-            ```bash
-            unzip OperaGX-PortProhibido-Patch.zip
-            cd OperaGX-PortProhibido-Patch
-            sudo ./instalar.sh
-            ```
+            ### Archivos:
+            - `splash_main_decompiled.txt`: Código descompilado de la función main.
+            - `splash_strings.txt`: Strings y referencias al .mp4.
+            - `analisis_ia.txt`: Análisis generado por Qwen sobre cómo portarlo a Linux.
+            - `INFORME_SPLASH_CONTROLLER.md`: Resumen de hallazgos.
+            
+            ### Objetivo:
+            Determinar si es posible reemplazar este ejecutable de Windows con una implementación nativa de Linux.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
