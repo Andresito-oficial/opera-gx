@@ -39,24 +39,45 @@ jobs:
           gh release download v1.0.0-base --repo Andresito-oficial/opera-gx --pattern "*.tar.xz" --dir .
           tar -xJf OperaGX.tar.xz -C windows-base/
           
-          # 1. Buscar opera_gx_splash.exe
-          SPLASH_EXE=$(find windows-base/ -name "opera_gx_splash.exe" -type f | head -n 1)
+          echo "🔍 DIAGNÓSTICO: Estructura del .tar.xz"
+          echo "======================================"
+          echo "Primeros 30 archivos extraídos:"
+          find windows-base/ -type f | head -n 30
+          echo ""
+          echo "Total de archivos: $(find windows-base/ -type f | wc -l)"
+          echo ""
+          
+          # Búsqueda CASE-INSENSITIVE y más amplia
+          echo "🔍 Buscando opera_gx_splash.exe (case-insensitive)..."
+          SPLASH_EXE=$(find windows-base/ -iname "*splash*.exe" -type f | head -n 1)
+          
           if [ -z "$SPLASH_EXE" ]; then
             echo "❌ ERROR: No se encontró opera_gx_splash.exe"
+            echo ""
+            echo "Buscando TODOS los archivos .exe disponibles:"
+            find windows-base/ -name "*.exe" -type f
             exit 1
           fi
+          
           echo "✅ Controlador encontrado: $SPLASH_EXE"
+          echo "Ruta completa: $(realpath $SPLASH_EXE)"
           echo "SPLASH_EXE=$SPLASH_EXE" >> $GITHUB_ENV
           
-          # 2. Buscar el archivo .mp4
-          WIN_MP4=$(find windows-base/ -name "*.mp4" | head -n 1)
-          echo "MP4_ENCONTRADO=$WIN_MP4" >> $GITHUB_ENV
-          
-          # 3. Copiar ambos a la raíz para facilitar el análisis
-          cp "$SPLASH_EXE" ./opera_gx_splash.exe
+          # Buscar el archivo .mp4
+          echo ""
+          echo "🔍 Buscando archivos .mp4..."
+          WIN_MP4=$(find windows-base/ -iname "*.mp4" -type f | head -n 1)
           if [ -n "$WIN_MP4" ]; then
+            echo "✅ Video encontrado: $WIN_MP4"
+            echo "MP4_ENCONTRADO=$WIN_MP4" >> $GITHUB_ENV
             cp "$WIN_MP4" ./splash.mp4
+          else
+            echo "⚠️  No se encontró archivo .mp4"
           fi
+          
+          # Copiar el exe a la raíz
+          cp "$SPLASH_EXE" ./opera_gx_splash.exe
+          ls -lh ./opera_gx_splash.exe
 
       - name: "Descompilar opera_gx_splash.exe con Radare2"
         run: |
