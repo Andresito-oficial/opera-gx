@@ -16,14 +16,28 @@ jobs:
           fetch-depth: 0
 
       # 1. Instalar dependencias y el descompilador profesional Radare2
-      - name: Instalar dependencias y Radare2 (Descompilador)
+      - name: Instalar dependencias del sistema y Radare2 oficial precompilado
         run: |
           sudo apt-get update
           sudo apt-get install -y wget p7zip-full curl jq git
           
-          # Instalar Radare2 desde su repositorio oficial
-          git clone https://github.com
-          cd radare2 && sys/install.sh && cd ..
+          echo "Consultando la API de Radare2 para capturar el binario portable de Linux..."
+          # El agente busca dinámicamente en ://github.com el asset estático para Linux x64 (.tar.xz)
+          R2_URL=$(curl -s https://github.com/radareorg/radare2/releases/latest
+          | jq -r '.assets[] | select(.name | match("radare2-[0-9.]+.*-linux-x64\\.tar\\.xz$")) | .browser_download_url' | head -n 1)
+          
+          echo "Descargando Radare2 precompilado desde: $R2_URL"
+          wget -O radare2-dist.tar.xz "$R2_URL"
+          
+          # Extraer e instalar localmente en el PATH del agente en un par de segundos
+          mkdir -p r2-extracted
+          tar -xf radare2-dist.tar.xz -C r2-extracted --strip-components=1
+          sudo cp -r r2-extracted/bin/* /usr/local/bin/
+          sudo cp -r r2-extracted/lib/* /usr/local/lib/ || true
+          sudo cp -r r2-extracted/share/* /usr/local/share/ || true
+          
+          echo "¡Radare2 listo e instalado mediante distribución oficial estática!"
+          r2 -v
 
       # 2. Levantar el servidor local de IA (Ollama + Qwen)
       - name: Iniciar servidor de IA local
