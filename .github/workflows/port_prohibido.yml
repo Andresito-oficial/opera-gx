@@ -1,4 +1,4 @@
-name: Port Prohibido - Opera GX 100% Nativo (Motor Linux + Splash Screen)
+name: Port Prohibido - Fusión Nativa (Release Asset + Linux Base)
 
 on:
   workflow_dispatch:
@@ -7,277 +7,142 @@ permissions:
   contents: write
 
 jobs:
-  extract-linux-native:
-    name: "Fase 1 - Extraccion Motor Linux"
+  fusion-patch:
+    name: "Fusión de Assets y Generación de Patch"
     runs-on: ubuntu-latest
-    outputs:
-      gx_version: ${{ steps.extract.outputs.gx_version }}
     steps:
-      - name: "Descargar Opera GX Linux (.deb)"
+      - name: "Descargar assets de Windows desde Release"
         run: |
-          echo "Descargando motor nativo de Linux desde CDN oficial..."
+          echo "Descargando OperaGX.tar.xz desde los Releases..."
+          mkdir -p windows-base
           
-          # URL correcta de descarga de Opera GX Linux
-          curl -L -o opera-gx-linux.deb \
-            "https://download3.operacdn.com/pub/opera_gx/stable/linux"
+          # Descarga directa desde el release (URL codificada correctamente)
+          curl -L -o OperaGX.tar.xz "https://github.com/Andresito-oficial/opera-gx/releases/download/v1.0.0-base/OperaGX.tar.xz"
           
-          # Verificar que es un archivo .deb válido
-          file opera-gx-linux.deb
-          
-          # Si no es un archivo .deb válido, intentar URL alternativa
-          if ! file opera-gx-linux.deb | grep -q "Debian"; then
-            echo "URL principal no funcionó, intentando URL alternativa..."
-            curl -L -o opera-gx-linux.deb \
-              "https://www.opera.com/download/get/?partner=www&opsys=Linux&arch=x64"
-          fi
-          
-          ls -lh opera-gx-linux.deb
-          file opera-gx-linux.deb
-      
-      - name: "Extraer motor de Linux"
-        id: extract
-        run: |
-          mkdir -p linux-assets extracted-resources
-          
-          # Verificar que es un archivo .deb válido
-          if ! file opera-gx-linux.deb | grep -q "Debian"; then
-            echo "ERROR: El archivo descargado no es un .deb válido"
-            echo "Contenido del archivo:"
-            head -n 20 opera-gx-linux.deb
+          if [ ! -f "OperaGX.tar.xz" ]; then
+            echo "ERROR: No se pudo descargar el archivo. Verifica la URL del Release."
             exit 1
           fi
           
-          dpkg-deb -x opera-gx-linux.deb linux-assets/
+          echo "Extrayendo contenido..."
+          tar -xJf OperaGX.tar.xz -C windows-base/
           
-          echo "Estructura de Linux extraida:"
-          find linux-assets/ -type f | head -n 30
-          
-          # Buscar el directorio de Opera GX
-          LINUX_DIR=$(find linux-assets/ -type d -name "opera-gx" -o -name "opera" | head -n 1)
-          
-          if [ -n "$LINUX_DIR" ] && [ -d "$LINUX_DIR" ]; then
-            echo "Extrayendo recursos de Linux desde $LINUX_DIR..."
-            find "$LINUX_DIR" \( -name "*.so" -o -name "*.json" -o -name "opera" -o -name "*.pak" \) -exec cp {} extracted-resources/ \; 2>/dev/null || true
-          fi
-          
-          # Extraer version
-          VERSION="unknown"
-          if [ -n "$LINUX_DIR" ] && [ -f "$LINUX_DIR/product_version" ]; then
-            VERSION=$(cat "$LINUX_DIR/product_version")
-          fi
-          echo "gx_version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
-          
-          # Verificar
-          FILE_COUNT=$(find extracted-resources/ -type f | wc -l)
-          echo "Archivos extraidos de Linux: $FILE_COUNT"
-      
-      - name: "Listar contenido"
-        run: |
-          echo "=== Recursos de Linux ==="
-          ls -lh extracted-resources/ | head -n 40
-          echo ""
-          echo "Total: $(find extracted-resources/ -type f | wc -l) archivos"
-      
-      - name: "Preservar artefactos"
-        uses: actions/upload-artifact@v4
-        with:
-          name: gx-linux-native
-          path: extracted-resources/
-          if-no-files-found: error
+          echo "Estructura de Windows extraída:"
+          echo "Total de archivos: $(find windows-base/ -type f | wc -l)"
+          find windows-base/ -type f | head -n 20
 
-  inject-splash-screen:
-    name: "Fase 2 - Inyeccion Splash Screen"
-    needs: extract-linux-native
-    runs-on: ubuntu-latest
-    steps:
-      - name: "Recuperar motor Linux"
-        uses: actions/download-artifact@v4
-        with:
-          name: gx-linux-native
-          path: gx-linux/
-      
-      - name: "Inyectar splash screen"
+      - name: "Descargar y extraer base nativa de Linux"
         run: |
-          mkdir -p final-assets
+          echo "Descargando .deb oficial de Linux..."
+          curl -L -o opera-gx-linux.deb "https://download3.operacdn.com/pub/opera_gx/stable/linux"
           
-          # Copiar motor Linux
-          cp -r gx-linux/* final-assets/ 2>/dev/null || true
-          
-          # Inyectar splash screen (tú lo subes aquí como artifact)
-          echo "Inyectando splash screen..."
-          cp -r splash-screen/* final-assets/ 2>/dev/null || true
-          
-          echo "=== Recursos finales ==="
-          ls -lh final-assets/ | head -n 40
-          echo ""
-          echo "Total: $(find final-assets/ -type f | wc -l) archivos"
-      
-      - name: "Preservar artefactos finales"
-        uses: actions/upload-artifact@v4
-        with:
-          name: gx-final-assets
-          path: final-assets/
-          if-no-files-found: error
-
-  compile-chromium-native:
-    name: "Fase 3 - La Forja Nativa Linux"
-    needs: inject-splash-screen
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    
-    steps:
-      - name: "Preparar el terreno con Swap"
-        run: |
-          echo "Activando 8GB de Swap..."
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          free -h
-      
-      - name: "Recuperar assets finales"
-        uses: actions/download-artifact@v4
-        with:
-          name: gx-final-assets
-          path: gx-assets/
-      
-      - name: "Verificar assets"
-        run: |
-          echo "Verificando assets..."
-          ls -lh gx-assets/ | head -n 30
-          FILE_COUNT=$(find gx-assets/ -type f | wc -l)
-          echo "Total: $FILE_COUNT archivos"
-          if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "ERROR: No hay assets"
+          if ! file opera-gx-linux.deb | grep -q "Debian"; then
+            echo "ERROR: El .deb descargado no es válido"
             exit 1
           fi
-      
-      - name: "Instalar herramientas de compilacion"
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git python3 curl xz-utils jq \
-            build-essential pkg-config libgtk-3-dev libx11-dev \
-            libxkbcommon-x11-dev libxkbcommon-dev libwayland-dev \
-            libasound2-dev libpulse-dev
-      
-      - name: "Clonar el motor Chromium"
-        run: |
-          echo "Descargando codigo fuente de Chromium..."
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          export PATH="$PWD/depot_tools:$PATH"
-          echo "PATH=$PATH" >> $GITHUB_ENV
           
-          mkdir chromium && cd chromium
-          fetch --no-history chromium
-          cd src
-          git checkout main
-      
-      - name: "Inyectar el Disfraz GX Completo"
+          echo ".deb válido. Extrayendo..."
+          mkdir -p linux-base
+          dpkg-deb -x opera-gx-linux.deb linux-base/
+          
+          echo "Estructura de Linux extraída:"
+          echo "Total de archivos: $(find linux-base/ -type f | wc -l)"
+
+      - name: "Fusión Segura (Linux Binarios + Windows Visuales)"
         run: |
-          cd chromium/src
-          echo "Inyectando splash screen + motor Linux..."
+          echo "Iniciando fusión segura..."
+          mkdir -p patch-final
           
-          # Copiar splash screens, iconos y recursos visuales
-          cp ../../gx-assets/*.png chrome/app/theme/default_100_percent/chromium/ 2>/dev/null || true
-          cp ../../gx-assets/*.jpg chrome/app/theme/default_100_percent/chromium/ 2>/dev/null || true
-          cp ../../gx-assets/*.ico chrome/app/theme/ 2>/dev/null || true
+          # 1. Copiar la base nativa de Linux (binarios, .so, estructura)
+          echo "Copiando base nativa de Linux..."
+          cp -r linux-base/usr patch-final/
           
-          # Modificar cadenas de texto
-          sed -i 's/Chromium/Opera GX/g' chrome/app/chromium_strings.grd 2>/dev/null || true
-          sed -i 's/Google Chrome/Opera GX/g' chrome/app/generated_resources.grd 2>/dev/null || true
-      
-      - name: "Configurar compilacion nativa"
+          # 2. Inyectar SOLO assets visuales y de UI desde Windows
+          echo "Inyectando assets visuales de Windows..."
+          
+          # Filtramos por extensiones seguras para NO sobrescribir binarios Linux
+          find windows-base/ -type f \( -name "*.png" -o -name "*.webp" -o -name "*.jpg" -o -name "*.ico" -o -name "*.wav" -o -name "*.mp3" -o -name "*.json" \) | while read file; do
+            filename=$(basename "$file")
+            cp "$file" "patch-final/usr/lib/opera-gx/$filename" 2>/dev/null || true
+          done
+          
+          echo "Fusión completada."
+          echo "Archivos finales en patch-final: $(find patch-final/ -type f | wc -l)"
+
+      - name: "Generar script de instalación para Arch Linux"
         run: |
-          cd chromium/src
-          gn gen out/Default --args='
-            is_debug=false
-            is_official_build=true
-            symbol_level=0
-            use_thin_lto=false
-            use_sysroot=false
-            treat_warnings_as_errors=false
-            enable_nacl=false
-            enable_hangout_services_extension=false
-            enable_widevine=true
-            target_os="linux"
-            target_cpu="x64"
-            use_allocator="none"
-          '
-      
-      - name: "Compilar el nucleo"
-        run: |
-          cd chromium/src
-          echo "Iniciando compilacion..."
-          ninja -C out/Default chrome -j 4
-      
-      - name: "Inyectar libffmpeg de Ld-Hagen"
-        run: |
-          echo "Inyectando libffmpeg.so..."
-          FFMPEG_URL=$(curl -s https://api.github.com/repos/Ld-Hagen/fix-opera-linux-ffmpeg-widevine/releases/latest \
-            | jq -r '.assets[] | select(.name | match(".*-linux-x64\\.zip$")) | .browser_download_url' | head -n 1)
-          wget -O ffmpeg.zip "$FFMPEG_URL"
-          unzip -o ffmpeg.zip -d ffmpeg-temp/
-          
-          TARGET_FFMPEG=$(find chromium/src/out/Default -name "libffmpeg.so" | head -n 1)
-          if [ -n "$TARGET_FFMPEG" ]; then
-            cp ffmpeg-temp/libffmpeg.so "$TARGET_FFMPEG"
-            echo "Inyeccion completada."
-          else
-            echo "ADVERTENCIA: No se encontro libffmpeg.so"
-          fi
-      
-      - name: "Empaquetar AppImage"
-        run: |
-          mkdir -p OperaGX-Native.AppDir/usr/bin
-          
-          cat << 'EOF' > OperaGX-Native.AppDir/opera-gx.desktop
-          [Desktop Entry]
-          Name=Opera GX
-          Comment=Port Prohibido - Motor Linux + Splash Screen
-          Exec=AppRun
-          Icon=opera-gx
-          Type=Application
-          Categories=Network;WebBrowser;
-          EOF
-          
-          wget -q -O OperaGX-Native.AppDir/opera-gx.png "https://upload.wikimedia.org/wikipedia/commons/8/89/Opera_GX_Icon.png" || \
-          echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWxR9awAAAABJRU5ErkJggg==" | base64 -d > OperaGX-Native.AppDir/opera-gx.png
-          
-          cat << 'EOF' > OperaGX-Native.AppDir/AppRun
+          cat << 'EOF' > patch-final/instalar.sh
           #!/bin/bash
-          HERE="$(dirname "$(readlink -f "$0")")"
-          exec "$HERE/usr/bin/chrome" --no-sandbox --disable-gpu-sandbox "$@"
-          EOF
-          chmod +x OperaGX-Native.AppDir/AppRun
+          echo "🚫 Port Prohibido - Instalador para Arch Linux"
+          echo "=============================================="
           
-          cp chromium/src/out/Default/chrome OperaGX-Native.AppDir/usr/bin/
-          cp -r chromium/src/out/Default/locales OperaGX-Native.AppDir/usr/bin/ 2>/dev/null || true
-          cp -r chromium/src/out/Default/resources OperaGX-Native.AppDir/usr/bin/ 2>/dev/null || true
-      
-      - name: "Sellado del AppImage"
+          if [ "$EUID" -ne 0 ]; then
+              echo "❌ Error: Ejecuta con sudo (sudo ./instalar.sh)"
+              exit 1
+          fi
+          
+          OPERA_PATH="/usr/lib/opera-gx"
+          if [ ! -d "$OPERA_PATH" ]; then
+              echo "❌ Error: No se encontró Opera GX en $OPERA_PATH"
+              echo "   Asegúrate de haberlo instalado desde AUR (yay -S opera-gx)"
+              exit 1
+          fi
+          
+          echo "✅ Opera GX detectado en $OPERA_PATH"
+          echo "📦 Creando backup..."
+          BACKUP="$OPERA_PATH-backup-$(date +%Y%m%d)"
+          sudo cp -r "$OPERA_PATH" "$BACKUP"
+          echo "✅ Backup creado en $BACKUP"
+          
+          echo "🎨 Aplicando assets de Windows (Splash, UI, Sonidos)..."
+          sudo cp -r usr/lib/opera-gx/* "$OPERA_PATH/"
+          
+          echo "✅ ¡Patch aplicado con éxito!"
+          echo "🔄 Reinicia Opera GX para ver los cambios."
+          EOF
+          chmod +x patch-final/instalar.sh
+
+      - name: "Generar INSTRUCCIONES.md"
         run: |
-          export ARCH=x86_64
-          LATEST_TOOL=$(curl -s https://api.github.com/repos/AppImage/appimagetool/releases/latest \
-            | jq -r '.assets[] | select(.name | endswith("-x86_64.AppImage")) | .browser_download_url' | head -n 1)
-          wget -O appimagetool "$LATEST_TOOL"
-          chmod +x appimagetool
-          ./appimagetool --appimage-extract-and-run OperaGX-Native.AppDir OperaGX-PortProhibido-x86_64.AppImage
-      
-      - name: "Publicar Release"
+          cat << 'EOF' > patch-final/INSTRUCCIONES.md
+          # 🚫 Port Prohibido - Patch Visual para Opera GX (Arch Linux)
+          
+          ## Instalación Rápida
+          ```bash
+          unzip OperaGX-PortProhibido-Patch.zip
+          cd OperaGX-PortProhibido-Patch
+          sudo ./instalar.sh
+          ```
+          
+          ## ¿Qué hace este patch?
+          Reemplaza los assets visuales (Splash screen, iconos, sonidos de UI) de la versión nativa de Linux con los extraídos de la versión completa de Windows, manteniendo los binarios nativos de Linux para máximo rendimiento.
+          EOF
+
+      - name: "Empaquetar y Publicar Release"
+        run: |
+          cd patch-final
+          zip -r ../OperaGX-PortProhibido-Patch.zip .
+          cd ..
+          
+          echo "ZIP creado:"
+          ls -lh OperaGX-PortProhibido-Patch.zip
+          
+      - name: "Subir Patch a Releases"
         uses: softprops/action-gh-release@v2
         with:
-          files: OperaGX-PortProhibido-x86_64.AppImage
-          tag_name: "port-prohibido-v1.0"
-          name: "Port Prohibido - Opera GX 100% Nativo (Completo)"
+          files: OperaGX-PortProhibido-Patch.zip
+          tag_name: "patch-fusion-v1.0"
+          name: "🚫 Port Prohibido - Patch de Fusión (Windows Assets + Linux Core)"
           body: |
-            ## Port Prohibido - Opera GX 100% Nativo
+            ## Patch de Fusión Generado Automáticamente
             
-            Port nativo real con splash screen completo.
+            Este ZIP contiene la fusión segura entre el núcleo nativo de Linux y los assets visuales de Windows.
             
-            ### La Combinacion Prohibida:
-            1. **Motor**: Compilado desde Chromium oficial para Linux
-            2. **Splash Screen**: Extraido del instalador de Windows
-            3. **Codecs**: libffmpeg.so de Ld-Hagen para Twitch/DRM
+            ### 🚀 Instalación en Arch:
+            ```bash
+            unzip OperaGX-PortProhibido-Patch.zip
+            cd OperaGX-PortProhibido-Patch
+            sudo ./instalar.sh
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
