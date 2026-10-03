@@ -19,7 +19,7 @@ jobs:
       - name: Instalar dependencias del sistema y Radare2 oficial precompilado
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget p7zip-full curl jq git
+          sudo apt-get install -y wget p7zip-full curl jq git xz-utils
           
           echo "Instalando la versión estática oficial de Radare2 para entornos de automatización..."
           
@@ -28,7 +28,9 @@ jobs:
           
           # Extraer de forma segura e inyectar en las rutas del sistema del agente
           mkdir -p r2-extracted
-          tar -xJf radare2-linux.tar.xz -C r2-extracted --strip-components=1 || tar -xJf radare2-lnux.tar.xz -C r2-extracted
+          # 1. Forzamos la extracción del .xz de forma pura (esto nos dejará un archivo .tar normal)
+          xz -d radare2-linux.tar.xz
+          tar -xf radare2-linux.tar
           
           # Copiar ejecutables para que el comando 'r2' responda globalmente
           sudo cp -r r2-extracted/bin/* /usr/local/bin/ 2>/dev/null || true
