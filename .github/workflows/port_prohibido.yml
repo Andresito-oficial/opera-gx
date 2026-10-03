@@ -43,7 +43,7 @@ jobs:
           echo "Total de archivos: $(find windows-base/ -type f | wc -l)"
           find windows-base/ -type f | head -n 20
 
-           - name: "Descargar y extraer base nativa de Linux"
+      - name: "Descargar y extraer base nativa de Linux"
         run: |
           echo "🔍 Obteniendo la última versión de Opera GX Linux desde el servidor público..."
           
