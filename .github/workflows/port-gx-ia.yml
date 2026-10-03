@@ -1,8 +1,8 @@
 name: Agente de Porting - Primer Lanzamiento con IA y Descompilador
 
 on:
-  push:
-    branches: [ "main", "master" ]
+ # push:
+  #branches: [ "main", "master" ]
   workflow_dispatch:
 
 permissions:
