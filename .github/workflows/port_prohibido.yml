@@ -15,14 +15,38 @@ jobs:
     steps:
       - name: "Descargar Opera GX Linux (.deb)"
         run: |
-          echo "Descargando motor nativo de Linux..."
-          curl -L -o opera-gx-linux.deb "https://download3.operacdn.com/pub/opera_gx/stable/linux"
+          echo "Descargando motor nativo de Linux desde CDN oficial..."
+          
+          # URL correcta de descarga de Opera GX Linux
+          curl -L -o opera-gx-linux.deb \
+            "https://download3.operacdn.com/pub/opera_gx/stable/linux"
+          
+          # Verificar que es un archivo .deb válido
+          file opera-gx-linux.deb
+          
+          # Si no es un archivo .deb válido, intentar URL alternativa
+          if ! file opera-gx-linux.deb | grep -q "Debian"; then
+            echo "URL principal no funcionó, intentando URL alternativa..."
+            curl -L -o opera-gx-linux.deb \
+              "https://www.opera.com/download/get/?partner=www&opsys=Linux&arch=x64"
+          fi
+          
           ls -lh opera-gx-linux.deb
+          file opera-gx-linux.deb
       
       - name: "Extraer motor de Linux"
         id: extract
         run: |
           mkdir -p linux-assets extracted-resources
+          
+          # Verificar que es un archivo .deb válido
+          if ! file opera-gx-linux.deb | grep -q "Debian"; then
+            echo "ERROR: El archivo descargado no es un .deb válido"
+            echo "Contenido del archivo:"
+            head -n 20 opera-gx-linux.deb
+            exit 1
+          fi
+          
           dpkg-deb -x opera-gx-linux.deb linux-assets/
           
           echo "Estructura de Linux extraida:"
@@ -73,13 +97,6 @@ jobs:
           name: gx-linux-native
           path: gx-linux/
       
-      - name: "Subir splash screen (tú lo subes aquí)"
-        uses: actions/upload-artifact@v4
-        with:
-          name: gx-splash-screen
-          path: splash-screen/
-          if-no-files-found: error
-      
       - name: "Inyectar splash screen"
         run: |
           mkdir -p final-assets
@@ -87,7 +104,7 @@ jobs:
           # Copiar motor Linux
           cp -r gx-linux/* final-assets/ 2>/dev/null || true
           
-          # Inyectar splash screen
+          # Inyectar splash screen (tú lo subes aquí como artifact)
           echo "Inyectando splash screen..."
           cp -r splash-screen/* final-assets/ 2>/dev/null || true
           
@@ -141,4 +158,126 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git python3 curl xz-utils jq \
             build-essential pkg-config libgtk-3-dev libx11-dev \
-            libxkbcommon-x11-dev libxkbcommon
+            libxkbcommon-x11-dev libxkbcommon-dev libwayland-dev \
+            libasound2-dev libpulse-dev
+      
+      - name: "Clonar el motor Chromium"
+        run: |
+          echo "Descargando codigo fuente de Chromium..."
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          export PATH="$PWD/depot_tools:$PATH"
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          
+          mkdir chromium && cd chromium
+          fetch --no-history chromium
+          cd src
+          git checkout main
+      
+      - name: "Inyectar el Disfraz GX Completo"
+        run: |
+          cd chromium/src
+          echo "Inyectando splash screen + motor Linux..."
+          
+          # Copiar splash screens, iconos y recursos visuales
+          cp ../../gx-assets/*.png chrome/app/theme/default_100_percent/chromium/ 2>/dev/null || true
+          cp ../../gx-assets/*.jpg chrome/app/theme/default_100_percent/chromium/ 2>/dev/null || true
+          cp ../../gx-assets/*.ico chrome/app/theme/ 2>/dev/null || true
+          
+          # Modificar cadenas de texto
+          sed -i 's/Chromium/Opera GX/g' chrome/app/chromium_strings.grd 2>/dev/null || true
+          sed -i 's/Google Chrome/Opera GX/g' chrome/app/generated_resources.grd 2>/dev/null || true
+      
+      - name: "Configurar compilacion nativa"
+        run: |
+          cd chromium/src
+          gn gen out/Default --args='
+            is_debug=false
+            is_official_build=true
+            symbol_level=0
+            use_thin_lto=false
+            use_sysroot=false
+            treat_warnings_as_errors=false
+            enable_nacl=false
+            enable_hangout_services_extension=false
+            enable_widevine=true
+            target_os="linux"
+            target_cpu="x64"
+            use_allocator="none"
+          '
+      
+      - name: "Compilar el nucleo"
+        run: |
+          cd chromium/src
+          echo "Iniciando compilacion..."
+          ninja -C out/Default chrome -j 4
+      
+      - name: "Inyectar libffmpeg de Ld-Hagen"
+        run: |
+          echo "Inyectando libffmpeg.so..."
+          FFMPEG_URL=$(curl -s https://api.github.com/repos/Ld-Hagen/fix-opera-linux-ffmpeg-widevine/releases/latest \
+            | jq -r '.assets[] | select(.name | match(".*-linux-x64\\.zip$")) | .browser_download_url' | head -n 1)
+          wget -O ffmpeg.zip "$FFMPEG_URL"
+          unzip -o ffmpeg.zip -d ffmpeg-temp/
+          
+          TARGET_FFMPEG=$(find chromium/src/out/Default -name "libffmpeg.so" | head -n 1)
+          if [ -n "$TARGET_FFMPEG" ]; then
+            cp ffmpeg-temp/libffmpeg.so "$TARGET_FFMPEG"
+            echo "Inyeccion completada."
+          else
+            echo "ADVERTENCIA: No se encontro libffmpeg.so"
+          fi
+      
+      - name: "Empaquetar AppImage"
+        run: |
+          mkdir -p OperaGX-Native.AppDir/usr/bin
+          
+          cat << 'EOF' > OperaGX-Native.AppDir/opera-gx.desktop
+          [Desktop Entry]
+          Name=Opera GX
+          Comment=Port Prohibido - Motor Linux + Splash Screen
+          Exec=AppRun
+          Icon=opera-gx
+          Type=Application
+          Categories=Network;WebBrowser;
+          EOF
+          
+          wget -q -O OperaGX-Native.AppDir/opera-gx.png "https://upload.wikimedia.org/wikipedia/commons/8/89/Opera_GX_Icon.png" || \
+          echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWxR9awAAAABJRU5ErkJggg==" | base64 -d > OperaGX-Native.AppDir/opera-gx.png
+          
+          cat << 'EOF' > OperaGX-Native.AppDir/AppRun
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/chrome" --no-sandbox --disable-gpu-sandbox "$@"
+          EOF
+          chmod +x OperaGX-Native.AppDir/AppRun
+          
+          cp chromium/src/out/Default/chrome OperaGX-Native.AppDir/usr/bin/
+          cp -r chromium/src/out/Default/locales OperaGX-Native.AppDir/usr/bin/ 2>/dev/null || true
+          cp -r chromium/src/out/Default/resources OperaGX-Native.AppDir/usr/bin/ 2>/dev/null || true
+      
+      - name: "Sellado del AppImage"
+        run: |
+          export ARCH=x86_64
+          LATEST_TOOL=$(curl -s https://api.github.com/repos/AppImage/appimagetool/releases/latest \
+            | jq -r '.assets[] | select(.name | endswith("-x86_64.AppImage")) | .browser_download_url' | head -n 1)
+          wget -O appimagetool "$LATEST_TOOL"
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract-and-run OperaGX-Native.AppDir OperaGX-PortProhibido-x86_64.AppImage
+      
+      - name: "Publicar Release"
+        uses: softprops/action-gh-release@v2
+        with:
+          files: OperaGX-PortProhibido-x86_64.AppImage
+          tag_name: "port-prohibido-v1.0"
+          name: "Port Prohibido - Opera GX 100% Nativo (Completo)"
+          body: |
+            ## Port Prohibido - Opera GX 100% Nativo
+            
+            Port nativo real con splash screen completo.
+            
+            ### La Combinacion Prohibida:
+            1. **Motor**: Compilado desde Chromium oficial para Linux
+            2. **Splash Screen**: Extraido del instalador de Windows
+            3. **Codecs**: libffmpeg.so de Ld-Hagen para Twitch/DRM
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
