@@ -12,22 +12,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Descargar assets de Windows desde Release"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Descargando OperaGX.tar.xz desde los Releases..."
+          echo "Descargando archivo desde los Releases (con autenticación)..."
           mkdir -p windows-base
           
-          # Descarga directa desde el release (URL codificada correctamente)
-          curl -L -o OperaGX.tar.xz "https://github.com/Andresito-oficial/opera-gx/releases/download/v1.0.0-base/OperaGX.tar.xz"
+          # Usar la CLI de GitHub para descargar el asset. 
+          # Busca cualquier archivo .tar.xz en el release "v1.0.0-base"
+          gh release download v1.0.0-base --repo Andresito-oficial/opera-gx --pattern "*.tar.xz" --dir .
           
-          if [ ! -f "OperaGX.tar.xz" ]; then
-            echo "ERROR: No se pudo descargar el archivo. Verifica la URL del Release."
+          # Verificar qué se descargó realmente
+          DOWNLOADED_FILE=$(ls *.tar.xz 2>/dev/null | head -n 1)
+          
+          if [ -z "$DOWNLOADED_FILE" ]; then
+            echo "❌ ERROR: No se encontró ningún archivo .tar.xz en el release."
+            echo "Archivos presentes en la carpeta:"
+            ls -la
             exit 1
           fi
           
-          echo "Extrayendo contenido..."
-          tar -xJf OperaGX.tar.xz -C windows-base/
+          echo "✅ Archivo descargado correctamente: $DOWNLOADED_FILE"
+          echo "Verificando tipo de archivo:"
+          file "$DOWNLOADED_FILE"
           
-          echo "Estructura de Windows extraída:"
+          echo "Extrayendo contenido..."
+          tar -xJf "$DOWNLOADED_FILE" -C windows-base/
+          
+          echo "📊 Estructura de Windows extraída:"
           echo "Total de archivos: $(find windows-base/ -type f | wc -l)"
           find windows-base/ -type f | head -n 20
 
