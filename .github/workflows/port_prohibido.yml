@@ -49,7 +49,7 @@ jobs:
           
           # Usamos la URL de redirección oficial y un User-Agent para evitar bloqueos del CDN
           curl -L -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-               -o opera-gx-linux.deb "https://www.opera.com/download/gx"
+               -o opera-gx-linux.deb "https://download.opera.com/download/get/?partner=www&opsys=Linux&product=Opera+GX"
           
           echo "Verificando archivo descargado..."
           file opera-gx-linux.deb
