@@ -32,53 +32,61 @@ jobs:
           echo "Archivos encontrados en Linux:"
           cat linux_splash_files.txt
 
-      - name: "Extraer opera_gx_splash.exe y .mp4 de Windows"
+      - name: "Extraer y DIAGNOSTICAR estructura de Windows"
         run: |
           echo "Extrayendo OperaGX.tar.xz..."
           mkdir -p windows-base
+          
+          # Descargar el tar.xz del release
           gh release download v1.0.0-base --repo Andresito-oficial/opera-gx --pattern "*.tar.xz" --dir .
+          
+          echo "Archivos descargados:"
+          ls -lh *.tar.xz
+          
+          echo ""
+          echo "Extrayendo..."
           tar -xJf OperaGX.tar.xz -C windows-base/
           
-          echo "🔍 DIAGNÓSTICO: Estructura del .tar.xz"
-          echo "======================================"
-          echo "Primeros 30 archivos extraídos:"
-          find windows-base/ -type f | head -n 30
           echo ""
-          echo "Total de archivos: $(find windows-base/ -type f | wc -l)"
+          echo "🔍 DIAGNÓSTICO COMPLETO DE windows-base/"
+          echo "========================================="
+          echo ""
+          echo "1. Estructura de directorios (primeros 50 items):"
+          find windows-base/ -type f | head -n 50
+          echo ""
+          echo "2. Total de archivos extraídos: $(find windows-base/ -type f | wc -l)"
+          echo ""
+          echo "3. Buscando CUALQUIER archivo .exe:"
+          find windows-base/ -name "*.exe" -type f | head -n 20
+          echo ""
+          echo "4. Buscando archivos con 'splash' en el nombre:"
+          find windows-base/ -iname "*splash*" -type f
+          echo ""
+          echo "5. Buscando archivos .mp4:"
+          find windows-base/ -name "*.mp4" -type f
+          echo ""
+          echo "6. Contenido de windows-base/ (nivel raíz):"
+          ls -la windows-base/
           echo ""
           
-          # Búsqueda CASE-INSENSITIVE y más amplia
-          echo "🔍 Buscando opera_gx_splash.exe (case-insensitive)..."
+          # Si hay subcarpetas, buscar en ellas
+          echo "7. Si hay subcarpetas, explorando..."
+          find windows-base/ -mindepth 1 -maxdepth 3 -type d | head -n 20
+          
+          # Intentar encontrar el splash de cualquier forma
           SPLASH_EXE=$(find windows-base/ -iname "*splash*.exe" -type f | head -n 1)
           
-          if [ -z "$SPLASH_EXE" ]; then
-            echo "❌ ERROR: No se encontró opera_gx_splash.exe"
+          if [ -n "$SPLASH_EXE" ]; then
             echo ""
-            echo "Buscando TODOS los archivos .exe disponibles:"
-            find windows-base/ -name "*.exe" -type f
+            echo "✅ ¡ENCONTRADO! $SPLASH_EXE"
+            echo "SPLASH_EXE=$SPLASH_EXE" >> $GITHUB_ENV
+            cp "$SPLASH_EXE" ./opera_gx_splash.exe
+          else
+            echo ""
+            echo "❌ No se encontró opera_gx_splash.exe en ninguna parte"
+            echo "Por favor revisa los logs arriba para ver la estructura real"
             exit 1
           fi
-          
-          echo "✅ Controlador encontrado: $SPLASH_EXE"
-          echo "Ruta completa: $(realpath $SPLASH_EXE)"
-          echo "SPLASH_EXE=$SPLASH_EXE" >> $GITHUB_ENV
-          
-          # Buscar el archivo .mp4
-          echo ""
-          echo "🔍 Buscando archivos .mp4..."
-          WIN_MP4=$(find windows-base/ -iname "*.mp4" -type f | head -n 1)
-          if [ -n "$WIN_MP4" ]; then
-            echo "✅ Video encontrado: $WIN_MP4"
-            echo "MP4_ENCONTRADO=$WIN_MP4" >> $GITHUB_ENV
-            cp "$WIN_MP4" ./splash.mp4
-          else
-            echo "⚠️  No se encontró archivo .mp4"
-          fi
-          
-          # Copiar el exe a la raíz
-          cp "$SPLASH_EXE" ./opera_gx_splash.exe
-          ls -lh ./opera_gx_splash.exe
-
       - name: "Descompilar opera_gx_splash.exe con Radare2"
         run: |
           echo "Descompilando opera_gx_splash.exe..."
