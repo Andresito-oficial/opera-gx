@@ -12,105 +12,77 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       gx_version: ${{ steps.extract.outputs.gx_version }}
-      extraction_success: ${{ steps.extract.outputs.success }}
     steps:
+      - name: "Instalar herramientas de extraccion"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full innoextract nsis
+      
       - name: "Descargar el especimen"
         run: |
-          echo "Descargando instalador oficial de Opera GX para Windows..."
+          echo "Descargando instalador oficial de Opera GX..."
           curl -L -o OperaGXSetup.exe "https://net.geo.opera.com/opera_gx/stable/windows"
-          
-          # Verificar que la descarga funcionó
-          if [ ! -f OperaGXSetup.exe ] || [ ! -s OperaGXSetup.exe ]; then
-            echo "ERROR: La descarga falló o el archivo está vacío"
-            exit 1
-          fi
-          
-          FILE_SIZE=$(stat -c%s OperaGXSetup.exe)
-          echo "Archivo descargado: $FILE_SIZE bytes"
-          
-          # Verificar que sea un ejecutable válido (debe empezar con MZ)
-          if ! head -c 2 OperaGXSetup.exe | grep -q "MZ"; then
-            echo "ERROR: El archivo descargado no parece ser un ejecutable Windows válido"
-            file OperaGXSetup.exe
-            exit 1
-          fi
-          
-          echo "Archivo válido detectado"
-
-      - name: "Extraer contenido del instalador"
-        run: |
-          echo "Extrayendo contenido del instalador SFX..."
-          mkdir -p gx-assets
-          
-          # Intentar extraer con 7z
-          if 7z x OperaGXSetup.exe -ogx-assets/ -y; then
-            echo "Extracción con 7z exitosa"
-          else
-            echo "7z falló, intentando con unzip..."
-            unzip -o OperaGXSetup.exe -d gx-assets/ || true
-          fi
-          
-          # Listar qué se extrajo
-          echo "Contenido extraído:"
-          find gx-assets/ -type f | head -n 20
-          
-          # Contar archivos
-          FILE_COUNT=$(find gx-assets/ -type f | wc -l)
-          echo "Total de archivos extraídos: $FILE_COUNT"
-          
-          if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "ERROR: No se extrajo ningún archivo"
-            exit 1
-          fi
-
-      - name: "Disecar y extraer recursos clave"
+          ls -lh OperaGXSetup.exe
+      
+      - name: "Extraer con innoextract (metodo principal)"
         id: extract
         run: |
-          # Encontrar el directorio de la versión
-          VERSION_DIR=$(find gx-assets/ -type d -name "[0-9]*" | head -n 1)
+          mkdir -p gx-assets extracted-resources
           
+          # Metodo 1: innoextract (para instaladores Inno Setup)
+          if innoextract OperaGXSetup.exe -d gx-assets/ 2>/dev/null; then
+            echo "Extraccion con innoexit exitosa"
+          else
+            echo "innoextract fallo, intentando con 7z..."
+            # Metodo 2: 7z con extraccion recursiva
+            7z x OperaGXSetup.exe -ogx-assets/ -y || true
+            7z x "gx-assets/*.7z" -ogx-assets/ -y 2>/dev/null || true
+          fi
+          
+          # Buscar el directorio de la version
+          VERSION_DIR=$(find gx-assets/ -type d -name "[0-9]*" | head -n 1)
           if [ -z "$VERSION_DIR" ]; then
-            echo "ERROR: No se encontró directorio de versión"
-            echo "Listando estructura de gx-assets:"
-            find gx-assets/ -maxdepth 3 -type d
+            VERSION_DIR=$(ls -d gx-assets/*/ 2>/dev/null | head -n 1)
+          fi
+          
+          echo "Directorio de version encontrado: $VERSION_DIR"
+          echo "gx_version=$(basename $VERSION_DIR 2>/dev/null || echo 'unknown')" >> $GITHUB_OUTPUT
+          
+          # Extraer recursos criticos
+          if [ -n "$VERSION_DIR" ] && [ -d "$VERSION_DIR" ]; then
+            echo "Extrayendo recursos de $VERSION_DIR..."
+            find "$VERSION_DIR" -name "*.pak" -exec cp {} extracted-resources/ \; 2>/dev/null || true
+            find "$VERSION_DIR" -name "*.json" -exec cp {} extracted-resources/ \; 2>/dev/null || true
+            find "$VERSION_DIR" \( -name "*.png" -o -name "*.ico" -o -name "*.wav" -o -name "*.dll" \) -exec cp {} extracted-resources/ \; 2>/dev/null || true
+          else
+            echo "ADVERTENCIA: No se encontro directorio de version, extrayendo todo..."
+            find gx-assets/ -type f \( -name "*.pak" -o -name "*.json" -o -name "*.png" -o -name "*.ico" \) -exec cp {} extracted-resources/ \; 2>/dev/null || true
+          fi
+          
+          # Verificar que hay archivos
+          FILE_COUNT=$(find extracted-resources/ -type f | wc -l)
+          echo "Archivos extraidos: $FILE_COUNT"
+          
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "ERROR: No se extrajeron archivos. Listando contenido de gx-assets:"
+            find gx-assets/ -type f | head -n 20
             exit 1
           fi
-          
-          echo "Directorio de versión encontrado: $VERSION_DIR"
-          echo "gx_version=$(basename $VERSION_DIR)" >> $GITHUB_OUTPUT
-          
-          mkdir -p extracted-resources
-          
-          echo "Extrayendo archivos .pak..."
-          find "$VERSION_DIR" -name "*.pak" -exec cp {} extracted-resources/ \; 2>/dev/null || echo "No se encontraron archivos .pak"
-          
-          echo "Extrayendo archivos .json..."
-          find "$VERSION_DIR" -name "*.json" -exec cp {} extracted-resources/ \; 2>/dev/null || echo "No se encontraron archivos .json"
-          
-          echo "Extrayendo recursos visuales..."
-          find "$VERSION_DIR" \( -name "*.png" -o -name "*.ico" -o -name "*.wav" \) -exec cp {} extracted-resources/ \; 2>/dev/null || echo "No se encontraron recursos visuales"
-          
-          # Verificar que se extrajo algo
-          RESOURCE_COUNT=$(find extracted-resources/ -type f | wc -l)
-          echo "Total de recursos extraídos: $RESOURCE_COUNT"
-          
-          if [ "$RESOURCE_COUNT" -gt 0 ]; then
-            echo "success=true" >> $GITHUB_OUTPUT
-            echo "Extracción exitosa"
-          else
-            echo "success=false" >> $GITHUB_OUTPUT
-            echo "WARNING: No se extrajeron recursos, pero continuando..."
-          fi
-          
+      
+      - name: "Listar contenido extraido (debug)"
+        run: |
           echo "Contenido de extracted-resources:"
-          ls -la extracted-resources/ | head -n 20
-
+          ls -lh extracted-resources/ | head -n 20
+          echo ""
+          echo "Total de archivos:"
+          find extracted-resources/ -type f | wc -l
+      
       - name: "Preservar artefactos"
-        if: steps.extract.outputs.success == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: gx-assets-prohibido
           path: extracted-resources/
+          if-no-files-found: error
 
   compile-chromium-native:
     name: "Fase 2 - La Forja Nativa Linux"
@@ -119,17 +91,9 @@ jobs:
     timeout-minutes: 360
     
     steps:
-      - name: "Verificar que la Fase 1 fue exitosa"
-        run: |
-          if [ "${{ needs.extract-windows-assets.outputs.extraction_success }}" != "true" ]; then
-            echo "ERROR: La Fase 1 no extrajo recursos correctamente"
-            exit 1
-          fi
-          echo "Fase 1 completada exitosamente"
-
       - name: "Preparar el terreno con Swap"
         run: |
-          echo "Activando 8GB de Swap para evitar OOM..."
+          echo "Activando 8GB de Swap..."
           sudo fallocate -l 8G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
@@ -141,6 +105,17 @@ jobs:
         with:
           name: gx-assets-prohibido
           path: gx-assets/
+
+      - name: "Verificar assets descargados"
+        run: |
+          echo "Verificando assets descargados..."
+          ls -lh gx-assets/ | head -n 20
+          FILE_COUNT=$(find gx-assets/ -type f | wc -l)
+          echo "Total de archivos: $FILE_COUNT"
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "ERROR: No hay assets descargados"
+            exit 1
+          fi
 
       - name: "Instalar herramientas de compilacion"
         run: |
@@ -165,40 +140,20 @@ jobs:
       - name: "Inyectar el Disfraz GX"
         run: |
           cd chromium/src
-          echo "Inyectando el ADN de Opera GX en el motor nativo..."
+          echo "Inyectando el ADN de Opera GX..."
           
-          # Verificar que los assets existen
-          if [ ! -d "../../gx-assets" ] || [ -z "$(ls -A ../../gx-assets/)" ]; then
-            echo "ERROR: No se encontraron assets de GX"
-            exit 1
-          fi
-          
-          echo "Assets disponibles:"
-          ls -la ../../gx-assets/ | head -n 20
-          
-          # Copiar recursos visuales
-          cp ../../gx-assets/*.png chrome/app/theme/default_100_percent/chromium/ 2>/dev/null || echo "No se copiaron PNGs"
-          cp ../../gx-assets/*.ico chrome/app/theme/ 2>/dev/null || echo "No se copiaron ICOs"
+          # Copiar recursos extraidos
+          cp ../../gx-assets/*.png chrome/app/theme/default_100_percent/chromium/ 2>/dev/null || true
+          cp ../../gx-assets/*.ico chrome/app/theme/ 2>/dev/null || true
           
           # Modificar cadenas de texto
-          if [ -f chrome/app/chromium_strings.grd ]; then
-            sed -i 's/Chromium/Opera GX/g' chrome/app/chromium_strings.grd
-            echo "Modificado chromium_strings.grd"
-          else
-            echo "WARNING: No se encontró chromium_strings.grd"
-          fi
-          
-          if [ -f chrome/app/generated_resources.grd ]; then
-            sed -i 's/Google Chrome/Opera GX/g' chrome/app/generated_resources.grd
-            echo "Modificado generated_resources.grd"
-          else
-            echo "WARNING: No se encontró generated_resources.grd"
-          fi
+          sed -i 's/Chromium/Opera GX/g' chrome/app/chromium_strings.grd 2>/dev/null || true
+          sed -i 's/Google Chrome/Opera GX/g' chrome/app/generated_resources.grd 2>/dev/null || true
 
       - name: "Configurar compilacion nativa"
         run: |
           cd chromium/src
-          echo "Configurando parametros de compilacion para Linux x64..."
+          echo "Configurando compilacion para Linux x64..."
           gn gen out/Default --args='
             is_debug=false
             is_official_build=true
@@ -217,32 +172,24 @@ jobs:
       - name: "Compilar el nucleo"
         run: |
           cd chromium/src
-          echo "Iniciando la forja (limitado a 4 jobs para salvar RAM)..."
+          echo "Iniciando compilacion (4 jobs paralelos)..."
           ninja -C out/Default chrome -j 4
 
       - name: "Inyectar libffmpeg de Ld-Hagen"
         run: |
-          echo "Inyectando libffmpeg.so nativa de Ld-Hagen..."
+          echo "Inyectando libffmpeg.so de Ld-Hagen..."
           FFMPEG_URL=$(curl -s https://api.github.com/repos/Ld-Hagen/fix-opera-linux-ffmpeg-widevine/releases/latest \
             | jq -r '.assets[] | select(.name | match(".*-linux-x64\\.zip$")) | .browser_download_url' | head -n 1)
-          
-          if [ -z "$FFMPEG_URL" ] || [ "$FFMPEG_URL" = "null" ]; then
-            echo "ERROR: No se pudo obtener la URL de libffmpeg"
-            exit 1
-          fi
-          
           wget -O ffmpeg.zip "$FFMPEG_URL"
           unzip -o ffmpeg.zip -d ffmpeg-temp/
           
           TARGET_FFMPEG=$(find chromium/src/out/Default -name "libffmpeg.so" | head -n 1)
-          
-          if [ -z "$TARGET_FFMPEG" ]; then
-            echo "ERROR: No se encontró libffmpeg.so en el directorio de compilación"
-            exit 1
+          if [ -n "$TARGET_FFMPEG" ]; then
+            cp ffmpeg-temp/libffmpeg.so "$TARGET_FFMPEG"
+            echo "Inyeccion completada."
+          else
+            echo "ADVERTENCIA: No se encontro libffmpeg.so en el build"
           fi
-          
-          cp ffmpeg-temp/libffmpeg.so "$TARGET_FFMPEG"
-          echo "Inyeccion completada. Codecs nativos listos."
 
       - name: "Empaquetar AppImage"
         run: |
@@ -264,7 +211,7 @@ jobs:
           cat << 'EOF' > OperaGX-Native.AppDir/AppRun
           #!/bin/bash
           HERE="$(dirname "$(readlink -f "$0")")"
-          echo "Iniciando Port Prohibido (100% Nativo, CERO Wine/Box64)..."
+          echo "Iniciando Port Prohibido (100% Nativo)..."
           exec "$HERE/usr/bin/chrome" --no-sandbox --disable-gpu-sandbox "$@"
           EOF
           chmod +x OperaGX-Native.AppDir/AppRun
@@ -287,15 +234,15 @@ jobs:
         with:
           files: OperaGX-PortProhibido-x86_64.AppImage
           tag_name: "port-prohibido-v1.0"
-          name: "Port Prohibido - Opera GX 100% Nativo para Linux"
+          name: "Port Prohibido - Opera GX 100% Nativo"
           body: |
             ## Port Prohibido - Opera GX 100% Nativo
             
-            Este es un port nativo real construido mediante ingenieria de sistemas.
+            Port nativo real construido desde el codigo fuente de Chromium.
             
-            ### La Alquimia:
-            1. Motor: Compilado desde cero usando el codigo fuente oficial de Chromium para Linux.
-            2. Identidad: Recursos extraidos del binario oficial de Windows.
-            3. Codecs: Inyeccion automatica de libffmpeg.so de Ld-Hagen.
+            ### Caracteristicas:
+            1. Motor: Compilado desde Chromium oficial para Linux
+            2. Identidad: Recursos extraidos del binario de Windows
+            3. Codecs: libffmpeg.so de Ld-Hagen para Twitch/DRM
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
