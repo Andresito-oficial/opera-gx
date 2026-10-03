@@ -16,7 +16,7 @@ jobs:
       - name: "Instalar herramientas de extraccion"
         run: |
           sudo apt-get update
-          sudo apt-get install -y p7zip-full innoextract nsis wine wine32
+          sudo apt-get install -y p7zip-full innoextract nsis
       
       - name: "Descargar el especimen"
         run: |
@@ -24,46 +24,28 @@ jobs:
           curl -L -o OperaGXSetup.exe "https://net.geo.opera.com/opera_gx/stable/windows"
           ls -lh OperaGXSetup.exe
       
-      - name: "Extraccion en dos fases (stub + instalador real)"
+      - name: "Extraer con innoextract (metodo principal)"
         id: extract
         run: |
           mkdir -p gx-assets extracted-resources
           
-          # FASE 1: Extraer el stub para obtener el installer.exe interno
-          echo "=== FASE 1: Extrayendo stub ==="
-          7z x OperaGXSetup.exe -ogx-assets/stub/ -y || true
-          
-          echo "Contenido del stub:"
-          find gx-assets/stub/ -type f -ls
-          
-          # Buscar el installer.exe interno
-          INTERNAL_INSTALLER=$(find gx-assets/stub/ -name "installer.exe" -o -name "*.exe" | head -n 1)
-          
-          if [ -z "$INTERNAL_INSTALLER" ]; then
-            echo "ERROR: No se encontro installer.exe interno"
-            exit 1
-          fi
-          
-          echo "Installer interno encontrado: $INTERNAL_INSTALLER"
-          ls -lh "$INTERNAL_INSTALLER"
-          
-          # FASE 2: Extraer el instalador real con innoextract
-          echo "=== FASE 2: Extrayendo instalador real con innoextract ==="
-          innoextract "$INTERNAL_INSTALLER" -d gx-assets/real/ || {
+          # Metodo 1: innoextract (para instaladores Inno Setup)
+          if innoextract OperaGXSetup.exe -d gx-assets/ 2>/dev/null; then
+            echo "Extraccion con innoexit exitosa"
+          else
             echo "innoextract fallo, intentando con 7z..."
-            7z x "$INTERNAL_INSTALLER" -ogx-assets/real/ -y || true
-          }
-          
-          echo "Contenido extraido:"
-          find gx-assets/real/ -type f | head -n 30
+            # Metodo 2: 7z con extraccion recursiva
+            7z x OperaGXSetup.exe -ogx-assets/ -y || true
+            7z x "gx-assets/*.7z" -ogx-assets/ -y 2>/dev/null || true
+          fi
           
           # Buscar el directorio de la version
-          VERSION_DIR=$(find gx-assets/real/ -type d -name "[0-9]*" | head -n 1)
+          VERSION_DIR=$(find gx-assets/ -type d -name "[0-9]*" | head -n 1)
           if [ -z "$VERSION_DIR" ]; then
-            VERSION_DIR=$(ls -d gx-assets/real/*/ 2>/dev/null | head -n 1)
+            VERSION_DIR=$(ls -d gx-assets/*/ 2>/dev/null | head -n 1)
           fi
           
-          echo "Directorio de version: $VERSION_DIR"
+          echo "Directorio de version encontrado: $VERSION_DIR"
           echo "gx_version=$(basename $VERSION_DIR 2>/dev/null || echo 'unknown')" >> $GITHUB_OUTPUT
           
           # Extraer recursos criticos
@@ -73,8 +55,8 @@ jobs:
             find "$VERSION_DIR" -name "*.json" -exec cp {} extracted-resources/ \; 2>/dev/null || true
             find "$VERSION_DIR" \( -name "*.png" -o -name "*.ico" -o -name "*.wav" -o -name "*.dll" \) -exec cp {} extracted-resources/ \; 2>/dev/null || true
           else
-            echo "Extrayendo todos los recursos encontrados..."
-            find gx-assets/real/ -type f \( -name "*.pak" -o -name "*.json" -o -name "*.png" -o -name "*.ico" -o -name "*.dll" \) -exec cp {} extracted-resources/ \; 2>/dev/null || true
+            echo "ADVERTENCIA: No se encontro directorio de version, extrayendo todo..."
+            find gx-assets/ -type f \( -name "*.pak" -o -name "*.json" -o -name "*.png" -o -name "*.ico" \) -exec cp {} extracted-resources/ \; 2>/dev/null || true
           fi
           
           # Verificar que hay archivos
@@ -82,17 +64,18 @@ jobs:
           echo "Archivos extraidos: $FILE_COUNT"
           
           if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "ERROR: No se extrajeron archivos"
-            find gx-assets/ -type f | head -n 50
+            echo "ERROR: No se extrajeron archivos. Listando contenido de gx-assets:"
+            find gx-assets/ -type f | head -n 20
             exit 1
           fi
       
-      - name: "Listar contenido extraido"
+      - name: "Listar contenido extraido (debug)"
         run: |
-          echo "=== Recursos extraidos ==="
-          ls -lh extracted-resources/ | head -n 30
+          echo "Contenido de extracted-resources:"
+          ls -lh extracted-resources/ | head -n 20
           echo ""
-          echo "Total: $(find extracted-resources/ -type f | wc -l) archivos"
+          echo "Total de archivos:"
+          find extracted-resources/ -type f | wc -l
       
       - name: "Preservar artefactos"
         uses: actions/upload-artifact@v4
@@ -125,12 +108,12 @@ jobs:
 
       - name: "Verificar assets descargados"
         run: |
-          echo "Verificando assets..."
+          echo "Verificando assets descargados..."
           ls -lh gx-assets/ | head -n 20
           FILE_COUNT=$(find gx-assets/ -type f | wc -l)
-          echo "Total: $FILE_COUNT archivos"
+          echo "Total de archivos: $FILE_COUNT"
           if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "ERROR: No hay assets"
+            echo "ERROR: No hay assets descargados"
             exit 1
           fi
 
@@ -157,17 +140,20 @@ jobs:
       - name: "Inyectar el Disfraz GX"
         run: |
           cd chromium/src
-          echo "Inyectando ADN de Opera GX..."
+          echo "Inyectando el ADN de Opera GX..."
           
+          # Copiar recursos extraidos
           cp ../../gx-assets/*.png chrome/app/theme/default_100_percent/chromium/ 2>/dev/null || true
           cp ../../gx-assets/*.ico chrome/app/theme/ 2>/dev/null || true
           
+          # Modificar cadenas de texto
           sed -i 's/Chromium/Opera GX/g' chrome/app/chromium_strings.grd 2>/dev/null || true
           sed -i 's/Google Chrome/Opera GX/g' chrome/app/generated_resources.grd 2>/dev/null || true
 
       - name: "Configurar compilacion nativa"
         run: |
           cd chromium/src
+          echo "Configurando compilacion para Linux x64..."
           gn gen out/Default --args='
             is_debug=false
             is_official_build=true
@@ -186,12 +172,12 @@ jobs:
       - name: "Compilar el nucleo"
         run: |
           cd chromium/src
-          echo "Iniciando compilacion..."
+          echo "Iniciando compilacion (4 jobs paralelos)..."
           ninja -C out/Default chrome -j 4
 
       - name: "Inyectar libffmpeg de Ld-Hagen"
         run: |
-          echo "Inyectando libffmpeg.so..."
+          echo "Inyectando libffmpeg.so de Ld-Hagen..."
           FFMPEG_URL=$(curl -s https://api.github.com/repos/Ld-Hagen/fix-opera-linux-ffmpeg-widevine/releases/latest \
             | jq -r '.assets[] | select(.name | match(".*-linux-x64\\.zip$")) | .browser_download_url' | head -n 1)
           wget -O ffmpeg.zip "$FFMPEG_URL"
@@ -202,7 +188,7 @@ jobs:
             cp ffmpeg-temp/libffmpeg.so "$TARGET_FFMPEG"
             echo "Inyeccion completada."
           else
-            echo "ADVERTENCIA: No se encontro libffmpeg.so"
+            echo "ADVERTENCIA: No se encontro libffmpeg.so en el build"
           fi
 
       - name: "Empaquetar AppImage"
@@ -225,6 +211,7 @@ jobs:
           cat << 'EOF' > OperaGX-Native.AppDir/AppRun
           #!/bin/bash
           HERE="$(dirname "$(readlink -f "$0")")"
+          echo "Iniciando Port Prohibido (100% Nativo)..."
           exec "$HERE/usr/bin/chrome" --no-sandbox --disable-gpu-sandbox "$@"
           EOF
           chmod +x OperaGX-Native.AppDir/AppRun
@@ -251,7 +238,7 @@ jobs:
           body: |
             ## Port Prohibido - Opera GX 100% Nativo
             
-            Port nativo real desde codigo fuente de Chromium.
+            Port nativo real construido desde el codigo fuente de Chromium.
             
             ### Caracteristicas:
             1. Motor: Compilado desde Chromium oficial para Linux
