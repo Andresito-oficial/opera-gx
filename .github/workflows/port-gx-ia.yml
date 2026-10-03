@@ -1,9 +1,12 @@
-name: Agente de Porting - Descompilador Automático + IA
+name: Agente de Porting - Primer Lanzamiento con IA y Descompilador
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   decompile-and-ai-port:
@@ -15,168 +18,126 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 1. Instalar dependencias y el descompilador profesional Radare2
-      - name: Instalar dependencias del sistema y Radare2 oficial precompilado
+      # Corrección de Radare2 utilizando el instalador oficial optimizado para pipelines
+      - name: Instalar dependencias y Radare2 nativo
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget p7zip-full curl jq git xz-utils
+          sudo apt-get install -y wget p7zip-full curl jq git xz-utils make gcc
           
-          echo "Instalando la versión estática oficial de Radare2 para entornos de automatización..."
+          echo "Descargando e instalando Radare2 optimizado para Integración Continua..."
+          # Clonación directa del repositorio oficial de Radare2
+          git clone --depth 1 https://github.com/radareorg/radare2.git
+          cd radare2 && ./sys/install.sh
+          cd ..
           
-          # Descargamos el binario de producción estático universal directo desde la infraestructura de radare
-          wget -O radare2-linux.tar.xz https://github.com/radareorg/radare2/releases/latest || wget -O radare2-linux.tar.xz https://github.com/radareorg/radare2/releases/download/6.2.2/radare2-6.2.2.tar.xz
-          
-          # Extraer de forma segura e inyectar en las rutas del sistema del agente
-          mkdir -p r2-extracted
-          # 1. Forzamos la extracción del .xz de forma pura (esto nos dejará un archivo .tar normal)
-          xz -d radare2-linux.tar.xz
-          tar -xf radare2-linux.tar
-          
-          # Copiar ejecutables para que el comando 'r2' responda globalmente
-          sudo cp -r r2-extracted/bin/* /usr/local/bin/ 2>/dev/null || true
-          sudo cp -r r2-extracted/lib/* /usr/local/lib/ 2>/dev/null || true
-          sudo cp -r r2-extracted/share/* /usr/local/share/ 2>/dev/null || true
-          
-          # Si la estructura es interna, enlazamos el binario directamente
-          if [ -f "r2-extracted/radare2" ]; then
-             sudo cp r2-extracted/radare2 /usr/local/bin/r2
-          fi
-          
-          echo "Verificando instalación del descompilador:"
-          command -v r2 || echo "Instalando fallback via gestor de paquetes de Ubuntu..."
-          if ! command -v r2 &> /dev/null; then
-             sudo apt-get install -y radare2
-          fi
-          
+          echo "Verificando funcionamiento del descompilador instalado:"
           r2 -v
 
-      # 2. Levantar el servidor local de IA (Ollama + Qwen)
-      - name: Iniciar servidor de IA local
+      - name: Iniciar servidor de IA local (Qwen)
         run: |
-          curl -fsSL https://ollama.com | sh
+          curl -fsSL https://ollama.com/install.sh | sh
           ollama serve &
           sleep 10
           ollama pull qwen2.5-coder:7b
 
-      # 3. Descargar el instalador oficial de Windows
       - name: Descargar Opera GX (Windows)
         run: |
-          curl -L -o OperaGXSetup.exe "https://net.geo.opera.com/opera_gx/stable/windows?utm_tryagain=yes&http_referrer=https%3A%2F%2Fwww.opera.com%2Fes%2Fgx%2Fgx-browser-nb%3Fgad_source%3D1%26gad_campaignid%3D18948233713&utm_site=opera_com&utm_lastpage=opera.com/gx/gx-browser-nb"
+          curl -L -o OperaGXSetup.exe "https://net.geo.opera.com/opera_gx/stable/windows"
 
-      # 4. Extraer los archivos binarios puros (.exe y .dll)
-      - name: Desempaquetar instalador de Windows
+      - name: Desempaquetar instalador de Windows (SFX)
         run: |
           mkdir -p contenido-extraido
           7z x OperaGXSetup.exe -ocontenido-extraido/ -y || true
 
-      # 5. PASO DEL DESCOMPILADOR: Extraer código base del ejecutable principal
-      # Usamos Radare2 para analizar el binario y extraer las funciones de inicialización
       - name: Descompilar funciones críticas de Windows
         run: |
-          echo "Iniciando descompilación automatizada del binario de Windows..."
-          
-          # Buscamos el binario principal de Opera (opera.exe o similar extraído)
-          BINARIO=\$(find contenido-extraido/ -name "opera.exe" | head -n 1)
-          
-          if [ -f "\$BINARIO" ]; then
-            # Ejecutamos Radare2 en modo comandos: analiza el binario (aa) y vuelca las funciones descompiladas (pdf)
-            r2 -qc "aa; pdf @ main" "\$BINARIO" > codigo_descompilado_windows.txt || echo "Función main oculta, volcando símbolos generales..."
-            r2 -qc "aa; afl" "\$BINARIO" >> codigo_descompilado_windows.txt
+          echo "Iniciando descompilación automatizada..."
+          BINARIO=$(find contenido-extraido/ -name "opera.exe" | head -n 1)
+          if [ -f "$BINARIO" ]; then
+            r2 -qc "aa; pdf @ main" "$BINARIO" > codigo_descompilado_windows.txt || echo "Volcando símbolos..."
+            r2 -qc "aa; afl" "$BINARIO" >> codigo_descompilado_windows.txt
           else
-            echo "No se encontró opera.exe en la raíz, analizando librerías secundarias..."
+            echo "No se encontró opera.exe, listando archivos..."
             find contenido-extraido/ -name "*.dll" | head -n 5 > lista_archivos.txt
           fi
-          
-          echo "=== MUESTRA DEL CÓDIGO FUENTE EXTRAÍDO (WINDOWS) ==="
-          head -n 50 codigo_descompilado_windows.txt || echo "Vacío"
 
-      # 6. EL PASO DE LA IA: Qwen procesa el código descompilador y escribe la solución nativa
       - name: Pasar código descompilado a Qwen para adaptación
         run: |
-          echo "Enviando código de ingeniería inversa a la IA..."
-          
-          # Leemos el archivo de descompilación de Windows para dárselo como contexto a la IA
-          CODIGO_CONTEZTO=\$(head -n 100 codigo_descompilado_windows.txt | tr -d '"' | tr -d '\n' | tr -d '\r')
-          
-          PROMPT="Eres un ingeniero experto en sistemas de bajo nivel y portabilidad. Aquí tienes un fragmento de código descompilado en lenguaje ensamblador/C extraído del ejecutable de Windows de Opera GX: [\$CODIGO_CONTEZTO]. Basándote en cómo maneja Windows sus llamadas multimedia e hilos en este código, genera un parche en script de Bash ('patch_comunitario.sh') que modifique dinámicamente las banderas de ejecución en Linux e inyecte la librería 'libffmpeg.so' nativa de Linux de forma que reemplace por completo los códecs problemáticos de Windows. Devuelve ÚNICAMENTE el código del script bash listo para ejecutarse, sin introducciones ni marcas de formato adicionales que no sean código puro."
-          
-          RESPONSE=\$(curl -s -X POST http://localhost:11434/api/generate -d "{\"model\": \"qwen2.5-coder:7b\", \"prompt\": \"\$PROMPT\", \"stream\": false}" | jq -r '.response')
-          
-          # Limpiar y guardar la solución inteligente de la IA
-          echo "\$RESPONSE" | sed -n '/```bash/,/```/p' | sed 's/```bash//g' | sed 's/```//g' > contenido-extraido/patch_comunitario.sh
+          echo "Enviando ingeniería inversa a la IA..."
+          CODIGO_CONTEXTO=$(head -n 50 codigo_descompilado_windows.txt | tr -d '"' | tr -d '\n' | tr -d '\r' || echo "Sin contexto")
+          PROMPT="Eres un ingeniero experto en sistemas de bajo nivel y portabilidad. Aquí tienes un fragmento de código descompilado extraído del ejecutable de Windows de Opera GX: [$CODIGO_CONTEXTO]. Genera un parche en script de Bash ('patch_comunitario.sh') que configure las banderas de ejecución en Linux e inyecte la librería 'libffmpeg.so' nativa de Linux de forma que reemplace los códecs de Windows para solucionar los streams de Twitch. Devuelve ÚNICAMENTE el código del script bash listo para ejecutarse, sin introducciones ni marcas extras."
+          RESPONSE=$(curl -s -X POST http://localhost:11434/api/generate -d "{\"model\": \"qwen2.5-coder:7b\", \"prompt\": \"$PROMPT\", \"stream\": false}" | jq -r '.response')
+          echo "$RESPONSE" | sed -n '/```bash/,/```/p' | sed 's/```bash//g' | sed 's/```//g' > contenido-extraido/patch_comunitario.sh
           chmod +x contenido-extraido/patch_comunitario.sh
-          
-          echo "=== PARCHE DE ARQUITECTURA GENERADO POR LA IA ==="
-          cat contenido-extraido/patch_comunitario.sh
 
-            # 7. Integrar el binario libffmpeg.so de Ld-Hagen (Formato: version-linux-x64.zip)
-      - name: Descargar e Inyectar libffmpeg de Ld-Hagen
+      - name: Descargar e Inyectar libffmpeg de Ld-Hagen (*-linux-x64.zip)
         run: |
-          echo "Consultando la API de Ld-Hagen para capturar el patrón *-linux-x64.zip..."
-          
-          # La IA detecta dinámicamente el release y filtra el asset que termina exactamente en linux-x64.zip
-          LATEST_FFMPEG_URL=$(curl -s https://github.com/Ld-Hagen/nwjs-ffmpeg-prebuilt/releases/latest | jq -r '.assets[] | select(.name | match(".*-linux-x64\\.zip$")) | .browser_download_url' | head -n 1)
-          NOMBRE_ARCHIVO=$(curl -s https://github.com/Ld-Hagen/nwjs-ffmpeg-prebuilt/releases/latest | jq -r '.assets[] | select(.name | match(".*-linux-x64\\.zip$")) | .name' | head -n 1)
-          
-          echo "Versión detectada en el servidor: $NOMBRE_ARCHIVO"
-          echo "URL de descarga directa: $LATEST_FFMPEG_URL"
-          
+          echo "Buscando patrón *-linux-x64.zip en los servidores de Ld-Hagen..."
+          LATEST_FFMPEG_URL=$(curl -s https://api.github.com/repos/Ld-Hagen/fix-opera-linux-ffmpeg-widevine/releases/latest | jq -r '.assets[] | select(.name | match(".*-linux-x64\\.zip$")) | .browser_download_url' | head -n 1)
+          NOMBRE_ARCHIVO=$(curl -s https://api.github.com/repos/Ld-Hagen/fix-opera-linux-ffmpeg-widevine/releases/latest | jq -r '.assets[] | select(.name | match(".*-linux-x64\\.zip$")) | .name' | head -n 1)
           if [ -n "$LATEST_FFMPEG_URL" ] && [ "$LATEST_FFMPEG_URL" != "null" ]; then
-            # Descargamos guardando el nombre dinámico exacto de la versión
             wget -O "$NOMBRE_ARCHIVO" "$LATEST_FFMPEG_URL"
-            
             mkdir -p patch-temp
-            # Descompresión limpia usando el nombre real de la versión
             unzip "$NOMBRE_ARCHIVO" -d patch-temp/
-            
-            # Buscamos el archivo libffmpeg.so extraído dentro de la estructura y lo inyectamos
             find patch-temp/ -name "libffmpeg.so" -exec cp {} contenido-extraido/ \;
-            echo "¡Librería multimedia inyectada con éxito en el núcleo del port!"
+            echo "¡Librería de la imagen inyectada correctamente!"
           else
-            echo "Error: No se pudo mapear el archivo *-linux-x64.zip desde el repositorio de Ld-Hagen."
-            exit 1
+            echo "Error en mapeo de zip." && exit 1
           fi
 
-      # 8. Exponer todo a la comunidad en tu rama de desarrollo
-      - name: Actualizar Rama de Desarrollo Comunitario (Código descompilado + IA)
+      - name: Actualizar Rama Comunitaria (Exposición de Código)
         run: |
-          git config --global user.name "Agente de Ingeniería Inversa IA"
-          git config --global user.email "agente-decompiler@porting.local"
-          
+          git config --global user.name "Agente de Porting Automático"
+          git config --global user.email "agente@porting.local"
           git checkout -b codigo-extraido || git checkout codigo-extraido
           cp -r contenido-extraido/* .
-          # Añadimos también el reporte del descompilador para que la comunidad lo estudie
           cp codigo_descompilado_windows.txt . || true
           git add .
-          git commit -m "Actualización: Volcado de descompilador y parches adaptados por Qwen IA" || echo "Sin cambios"
+          git commit -m "Primer Lanzamiento: Código descompilado + Adaptación de IA e inyección Multimedia" || echo "Sin cambios"
           git push origin codigo-extraido --force
 
-      # 9. Compilación del binario ejecutable portable final (AppImage)
-      - name: Generar ejecutable final AppImage
+      - name: Estructurar paquete AppImage
         run: |
-          # Configurar estructura básica
           mkdir -p OperaGX.AppDir/usr/bin
           cat << 'EOF' > OperaGX.AppDir/AppRun
           #!/bin/bash
-          HERE="\$(dirname "(readlink -f "{0}")")"
-          if [ -f "\$HERE/usr/bin/patch_comunitario.sh" ]; then
-             source "\$HERE/usr/bin/patch_comunitario.sh"
+          HERE="$(dirname "$(readlink -f "$0")")"
+          if ! command -v wine &> /dev/null; then
+              echo "Error: Se requiere 'wine' en Linux para correr este port."
+              exit 1
           fi
-          wine "\$HERE/usr/bin/opera.exe" --no-sandbox "@"
+          if [ -f "$HERE/usr/bin/patch_comunitario.sh" ]; then
+             source "$HERE/usr/bin/patch_comunitario.sh"
+          fi
+          wine "$HERE/usr/bin/opera.exe" --no-sandbox --disable-features=GpuSandbox --use-gl=desktop "$@"
           EOF
           chmod +x OperaGX.AppDir/AppRun
           cp -r contenido-extraido/* OperaGX.AppDir/usr/bin/
-          
-          # Descargar appimagetool oficial de GitHub
-          LATEST_APPIMAGE_TOOL=\$(curl -s https://github.com/AppImage/appimagetool/releases/latest | jq -r '.assets[] | select(.name | endswith("-x86_64.AppImage")) | .browser_download_url' | head -n 1)
-          wget -O appimagetool "\$LATEST_APPIMAGE_TOOL" && chmod +x appimagetool
-          
-          ./appimagetool OperaGX.AppDir OperaGX-Decompiled-AI-Port-x86_64.AppImage
 
-      # 10. Publicar el Release
-      - name: Publicar Release
+      - name: Descargar appimagetool oficial
+        run: |
+          LATEST_APPIMAGE_TOOL=$(curl -s https://api.github.com/repos/AppImage/appimagetool/releases/latest | jq -r '.assets[] | select(.name | endswith("-x86_64.AppImage")) | .browser_download_url' | head -n 1)
+          wget -O appimagetool "$LATEST_APPIMAGE_TOOL"
+          chmod +x appimagetool
+
+      - name: Compilar archivo final portable para Linux
+        run: |
+          ./appimagetool OperaGX.AppDir OperaGX-Linux-RE-x86_64.AppImage
+
+      - name: Crear Primer Release en GitHub
         uses: softprops/action-gh-release@v2
         with:
-          files: OperaGX-Decompiled-AI-Port-x86_64.AppImage
-          tag_name: decompiler-build-v\${{ github.run_number }}
-          name: Opera GX RE Port (IA + Descompilador) v\${{ github.run_number }}
+          files: OperaGX-Linux-RE-x86_64.AppImage
+          tag_name: v1.0.0-alpha
+          name: Opera GX Linux RE Port (Primer Lanzamiento)
+          body: |
+            ## ¡Primer Lanzamiento Comunitario de Opera GX para Linux!
+            
+            Este archivo portable ejecutable ha sido generado mediante ingeniería inversa guiada por Inteligencia Artificial de forma automatizada.
+            
+            ### Qué incluye este release:
+            * **Núcleo de Windows:** Extraído de los servidores oficiales estables de Opera.
+            * **Twitch & Live Streams Fix:** Integración automatizada del binario `libffmpeg.so` de **Ld-Hagen** filtrado directamente desde el paquete de arquitectura de Linux.
+            * **Capa de parches inteligentes:** Script de compatibilidad diseñado por el modelo de IA `qwen2.5-coder` tras analizar las funciones descompiladas.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
