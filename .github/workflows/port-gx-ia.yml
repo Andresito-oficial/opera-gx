@@ -21,22 +21,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wget p7zip-full curl jq git
           
-          echo "Consultando la API de Radare2 para capturar el binario portable de Linux..."
+          echo "Instalando la versión estática oficial de Radare2 para entornos de automatización..."
           
-          # Sintaxis ultra simplificada y blindada sin caracteres de escape conflictivos
-          R2_URL=$(curl -s https://github.com/radareorg/radare2/releases/latest | jq -r '.assets[] | select(.name | contains("linux-x64.tar.xz")) | .browser_download_url' | head -n 1)
+          # Descargamos el binario de producción estático universal directo desde la infraestructura de radare
+          wget -O radare2-linux.tar.xz https://github.com/radareorg/radare2/releases/latest || wget -O radare2-linux.tar.xz https://github.com/radareorg/radare2/releases/download/6.2.2/radare2-6.2.2.tar.xz
           
-          echo "Descargando Radare2 precompilado desde: $R2_URL"
-          wget -O radare2-dist.tar.xz "$R2_URL"
-          
-          # Extraer e instalar localmente en el entorno del agente
+          # Extraer de forma segura e inyectar en las rutas del sistema del agente
           mkdir -p r2-extracted
-          tar -xf radare2-dist.tar.xz -C r2-extracted --strip-components=1
-          sudo cp -r r2-extracted/bin/* /usr/local/bin/
-          sudo cp -r r2-extracted/lib/* /usr/local/lib/ || true
-          sudo cp -r r2-extracted/share/* /usr/local/share/ || true
+          tar -xf radare2-linux.tar.gz -C r2-extracted --strip-components=1 || tar -xf radare2-linux.tar.gz -C r2-extracted
           
-          echo "¡Radare2 listo e instalado con éxito!"
+          # Copiar ejecutables para que el comando 'r2' responda globalmente
+          sudo cp -r r2-extracted/bin/* /usr/local/bin/ 2>/dev/null || true
+          sudo cp -r r2-extracted/lib/* /usr/local/lib/ 2>/dev/null || true
+          sudo cp -r r2-extracted/share/* /usr/local/share/ 2>/dev/null || true
+          
+          # Si la estructura es interna, enlazamos el binario directamente
+          if [ -f "r2-extracted/radare2" ]; then
+             sudo cp r2-extracted/radare2 /usr/local/bin/r2
+          fi
+          
+          echo "Verificando instalación del descompilador:"
+          command -v r2 || echo "Instalando fallback via gestor de paquetes de Ubuntu..."
+          if ! command -v r2 &> /dev/null; then
+             sudo apt-get install -y radare2
+          fi
+          
           r2 -v
 
       # 2. Levantar el servidor local de IA (Ollama + Qwen)
