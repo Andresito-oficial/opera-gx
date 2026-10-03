@@ -28,7 +28,7 @@ jobs:
           
           # Extraer de forma segura e inyectar en las rutas del sistema del agente
           mkdir -p r2-extracted
-          tar -xf radare2-linux.tar.gz -C r2-extracted --strip-components=1 || tar -xf radare2-linux.tar.gz -C r2-extracted
+          tar -xf radare2-linux.tar.xz -C r2-extracted --strip-components=1 || tar -xf radare2-linux.tar.xz -C r2-extracted
           
           # Copiar ejecutables para que el comando 'r2' responda globalmente
           sudo cp -r r2-extracted/bin/* /usr/local/bin/ 2>/dev/null || true
