@@ -47,7 +47,7 @@ jobs:
           echo ""
           echo "Extrayendo..."
           tar -xJf OperaGX.tar.xz -C aux/
-          tar -xJf OperGX.tar -C windows-base/
+          tar -xJf OperaGX.tar -C windows-base/
           
           echo ""
           echo "🔍 DIAGNÓSTICO COMPLETO DE windows-base/"
