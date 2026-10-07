@@ -34,14 +34,14 @@ jobs:
 
       - name: "Extraer y DIAGNOSTICAR estructura de Windows"
         run: |
-          echo "Extrayendo OperaGX.tar.xz..."
+          echo "Extrayendo OperaGX.tar..."
           mkdir -p windows-base
           
-          # Descargar el tar.xz del release
+          # Descargar el tar del release
           gh release download v1.0.0-base --repo Andresito-oficial/opera-gx --pattern "*.tar" --dir .
           
           echo "Archivos descargados:"
-          ls -lh *.tar.xz
+          ls -lh *.tar
           
           echo ""
           echo "Extrayendo..."
