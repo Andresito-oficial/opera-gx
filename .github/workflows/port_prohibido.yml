@@ -36,18 +36,16 @@ jobs:
         run: |
           echo "Extrayendo OperaGX.tar.xz..."
           mkdir -p windows-base
-          mkdir -p aux
           
           # Descargar el tar.xz del release
-          gh release download v1.0.0-base --repo Andresito-oficial/opera-gx --pattern "*.tar.xz" --dir .
+          gh release download v1.0.0-base --repo Andresito-oficial/opera-gx --pattern "*.tar" --dir .
           
           echo "Archivos descargados:"
           ls -lh *.tar.xz
           
           echo ""
           echo "Extrayendo..."
-          tar -xJf OperaGX.tar.xz -C aux/
-          tar -xJf aux/OperaGX.tar -C windows-base/
+          tar -xJf OperaGX.tar-C windows-base/
           
           echo ""
           echo "🔍 DIAGNÓSTICO COMPLETO DE windows-base/"
