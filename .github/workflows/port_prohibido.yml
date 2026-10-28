@@ -1,10 +1,10 @@
-name: Port Prohibido - Reverse Engineering y Port
+name: Port Prohibido - Análisis y Generación con Qwen
 
 on:
   workflow_dispatch:
 
 jobs:
-  reverse-engineer-and-port:
+  reverse-engineer-with-qwen:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -12,18 +12,16 @@ jobs:
       - name: "Checkout del repositorio"
         uses: actions/checkout@v4
 
-      - name: "Instalar herramientas (Radare2, 7z, Wine, etc.)"
+      - name: "Instalar herramientas (Radare2, 7z, Python)"
         run: |
           sudo apt-get update
-          # Instalamos Radare2, 7zip y binutils para análisis de binarios
-          sudo apt-get install -y radare2 p7zip-full wget curl file binutils
+          sudo apt-get install -y radare2 p7zip-full wget curl file python3 python3-pip
+          pip install openai
 
-      # ==========================================
-      # 1. DESCARGA Y EXTRACCIÓN DEL .EXE DE WINDOWS
-      # ==========================================
       - name: "Descargar y Analizar Opera GX (Windows)"
         run: |
           echo "Descargando instalador de Windows..."
+          # Descarga la última versión de Opera GX para Windows
           wget -O opera_gx_win_installer.exe "https://net.geo.opera.com/opera_gx/stable/windows"
           
           echo "Verificando el tipo de archivo..."
@@ -31,82 +29,100 @@ jobs:
           
           echo "Extrayendo el instalador con 7z..."
           mkdir -p windows-base
-          # 7z puede extraer los archivos internos de los instaladores NSIS/InnoSetup
           7z x opera_gx_win_installer.exe -o./windows-base/ -y
           
-          echo "Buscando el splash screen y otros binarios..."
-          find windows-base/ -type f -name "*.exe" | head -n 20
-
-      # ==========================================
-      # 2. DESCOMPILACIÓN CON RADARE2 (El "Port" Real)
-      # ==========================================
-      - name: "Descompilar opera_gx_splash.exe"
-        run: |
-          # Buscamos el archivo en la carpeta extraída
+          echo "Buscando el splash screen..."
           SPLASH_EXE=$(find windows-base/ -name "opera_gx_splash.exe" | head -n 1)
-          
           if [ -z "$SPLASH_EXE" ]; then
-            echo "No se encontró opera_gx_splash.exe. Buscando otros..."
+            echo "No se encontró opera_gx_splash.exe, usando el primer .exe disponible."
             SPLASH_EXE=$(find windows-base/ -name "*.exe" | head -n 1)
           fi
-          
-          echo "Analizando $SPLASH_EXE..."
-          
-          # 1. Extraer strings (útil para buscar comandos, URLs o textos)
-          r2 -q -e scr.color=0 -c "iz > splash_strings.txt" "$SPLASH_EXE"
-          cat splash_strings.txt
-          
-          # 2. Análisis de la función main
-          r2 -q -e scr.color=0 -c "aaa; afl; pdf @ main > splash_main_decompiled.txt" "$SPLASH_EXE"
-          cat splash_main_decompiled.txt
-          
-          # 3. Extraer los recursos PE (iconos, bitmaps)
-          # r2 tiene un módulo para volcar recursos (esto es un ejemplo)
-          r2 -q -e scr.color=0 -c "iR > splash_resources.txt" "$SPLASH_EXE"
-          cat splash_resources.txt
+          echo "Archivo seleccionado: $SPLASH_EXE"
+          echo "SPLASH_EXE_PATH=$SPLASH_EXE" >> $GITHUB_ENV
 
-      # ==========================================
-      # 3. PREPARAR LA BASE DE LINUX
-      # ==========================================
-      - name: "Descargar y extraer Opera GX (Linux)"
+      - name: "Descompilar el binario con Radare2"
         run: |
-          echo "Descargando .deb de Linux..."
-          wget -O opera_gx_linux.deb "https://get.opera.com/pub/opera_gx/stable/linux/opera-gx-stable_129.0.5823.26_amd64.deb"
+          echo "Extrayendo strings y descompilando..."
+          r2 -q -e scr.color=0 -c "iz > splash_strings.txt" "${{ env.SPLASH_EXE_PATH }}"
+          r2 -q -e scr.color=0 -c "aaa; afl; pdf @ main > splash_main_decompiled.txt" "${{ env.SPLASH_EXE_PATH }}"
           
-          echo "Extrayendo .deb..."
-          mkdir -p linux-base
-          dpkg-deb -x opera_gx_linux.deb linux-base/
-          
-          echo "Estructura de Linux lista en linux-base/"
+          echo "=== Tamaño de los archivos generados ==="
+          ls -lh splash_strings.txt splash_main_decompiled.txt
 
-      # ==========================================
-      # 4. INYECCIÓN / PARCHEO (El Port)
-      # ==========================================
-      - name: "Inyectar recursos descompilados en Linux"
+      - name: "Generar código con Qwen (IA)"
+        env:
+          # Necesitas configurar esta variable en GitHub Secrets
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }} 
         run: |
-          LINUX_DIR="linux-base/usr/lib/opera-gx"
-          
-          # Aquí es donde harías tu magia. Por ejemplo, si parcheaste el splash:
-          # cp windows-base/opera_gx_splash.exe "$LINUX_DIR/" (si usas Wine para ejecutarlo)
-          
-          # O si extrajiste los recursos (imágenes, sonidos) y los quieres meter en el .pak
-          # Necesitarías herramientas como "pak_util" de Chromium.
-          
-          echo "¡Archivos preparados para el port!"
+          cat << 'EOF' > qwen_analyzer.py
+          import os
+          from openai import OpenAI
 
-      # ==========================================
-      # 5. EMPAQUETAR EL RESULTADO
-      # ==========================================
-      - name: "Empaquetar el port final"
+          # Configurar el cliente para usar la API compatible de Qwen
+          client = OpenAI(
+              api_key=os.environ.get("DASHSCOPE_API_KEY", "dummy_key"),
+              base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+          )
+
+          # Leer el código descompilado y los strings
+          with open("splash_main_decompiled.txt", "r") as f:
+              decompiled_code = f.read()[:10000] # Limitar para no exceder tokens
+              
+          with open("splash_strings.txt", "r") as f:
+              strings_data = f.read()[:5000]
+
+          prompt = f"""
+          Actúa como un experto en ingeniería inversa de software y desarrollo en C/C++.
+          Tengo el código descompilado de un binario de Windows (opera_gx_splash.exe).
+          Mi objetivo es portarlo a Linux o crear un parche para que no dependa de las APIs de Windows.
+
+          Aquí tienes los Strings encontrados:
+          {strings_data}
+
+          Aquí tienes la función principal descompilada:
+          {decompiled_code}
+
+          Por favor:
+          1. Analiza qué hace el binario.
+          2. Genera el código en C o C++ necesario para replicar esta funcionalidad en Linux.
+          3. Si ves llamadas a la API de Windows (como CreateWindow, MessageBox, etc.), sugiere sus equivalentes en GTK o Qt.
+          4. Escribe el código resultante de forma clara.
+          """
+
+          try:
+              response = client.chat.completions.create(
+                  model="qwen-coder-plus", # o qwen-max, qwen-plus
+                  messages=[
+                      {"role": "system", "content": "Eres un experto en reversing y portabilidad de software."},
+                      {"role": "user", "content": prompt}
+                  ],
+                  temperature=0.2
+              )
+              
+              with open("qwen_port_strategy.md", "w") as out:
+                  out.write(response.choices[0].message.content)
+              print("✅ Análisis de Qwen generado con éxito.")
+          except Exception as e:
+              print(f"❌ Error contactando a la API de Qwen: {e}")
+              # Fallback para que no falle el workflow si no hay API key
+              with open("qwen_port_strategy.md", "w") as out:
+                  out.write("# Error\nNo se pudo conectar a la API de Qwen. Revisa tu DASHSCOPE_API_KEY.")
+          EOF
+          
+          python3 qwen_analyzer.py
+
+      - name: "Empaquetar resultados"
         run: |
           mkdir -p dist
-          # Empaquetamos todo el entorno de Linux
-          tar -czvf dist/Opera-GX-Port-Linux.tar.gz -C linux-base/ .
+          cp splash_main_decompiled.txt dist/
+          cp splash_strings.txt dist/
+          cp qwen_port_strategy.md dist/
           
-          echo "¡Port generado en dist/Opera-GX-Port-Linux.tar.gz!"
+          tar -czvf dist/Opera-GX-Reverse-Port.tar.gz -C dist/ .
+          echo "¡Port generado con éxito!"
 
       - name: "Subir artefacto"
         uses: actions/upload-artifact@v4
         with:
-          name: Opera-GX-Port-Descompilado
-          path: dist/Opera-GX-Port-Linux.tar.gz
+          name: Opera-GX-Qwen-Port
+          path: dist/Opera-GX-Reverse-Port.tar.gz
