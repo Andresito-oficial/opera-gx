@@ -1,12 +1,15 @@
-name: Port Prohibido - Análisis y Generación con Qwen
+name: Port Prohibido - Análisis Windows y Qwen Code
 
 on:
   workflow_dispatch:
 
 jobs:
-  reverse-engineer-with-qwen:
+  reverse-engineer-and-port:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      models: read # Permiso crucial para usar GitHub Models (Qwen)
 
     steps:
       - name: "Checkout del repositorio"
@@ -15,66 +18,82 @@ jobs:
       - name: "Instalar herramientas (Radare2, 7z, Python)"
         run: |
           sudo apt-get update
-          sudo apt-get install -y radare2 p7zip-full wget curl file python3 python3-pip
+          sudo apt-get install -y radare2 p7zip-full wget file python3 python3-pip
           pip install openai
 
-      - name: "Descargar y Analizar Opera GX (Windows)"
+      # ==========================================
+      # 1. DESCARGAR Y EXTRAER SOLO WINDOWS
+      # ==========================================
+      - name: "Descargar y extraer Opera GX (Windows)"
         run: |
           echo "Descargando instalador de Windows..."
-          # Descarga la última versión de Opera GX para Windows
           wget -O opera_gx_win_installer.exe "https://net.geo.opera.com/opera_gx/stable/windows"
           
           echo "Verificando el tipo de archivo..."
           file opera_gx_win_installer.exe
           
-          echo "Extrayendo el instalador con 7z..."
+          echo "Extrayendo el instalador con 7z (adiós problemas de untar)..."
           mkdir -p windows-base
           7z x opera_gx_win_installer.exe -o./windows-base/ -y
           
           echo "Buscando el splash screen..."
           SPLASH_EXE=$(find windows-base/ -name "opera_gx_splash.exe" | head -n 1)
           if [ -z "$SPLASH_EXE" ]; then
-            echo "No se encontró opera_gx_splash.exe, usando el primer .exe disponible."
-            SPLASH_EXE=$(find windows-base/ -name "*.exe" | head -n 1)
+            echo "No se encontró opera_gx_splash.exe, buscando otro binario principal..."
+            SPLASH_EXE=$(find windows-base/ -name "opera.exe" | head -n 1)
           fi
+          
+          if [ -z "$SPLASH_EXE" ]; then
+            echo "❌ Error: No se encontró ningún binario para analizar."
+            exit 1
+          fi
+          
           echo "Archivo seleccionado: $SPLASH_EXE"
           echo "SPLASH_EXE_PATH=$SPLASH_EXE" >> $GITHUB_ENV
 
-      - name: "Descompilar el binario con Radare2"
+      # ==========================================
+      # 2. DESCOMPILAR CON RADARE2
+      # ==========================================
+      - name: "Descompilar binario con Radare2"
         run: |
-          echo "Extrayendo strings y descompilando..."
+          echo "Extrayendo strings..."
           r2 -q -e scr.color=0 -c "iz > splash_strings.txt" "${{ env.SPLASH_EXE_PATH }}"
+          
+          echo "Analizando función main..."
           r2 -q -e scr.color=0 -c "aaa; afl; pdf @ main > splash_main_decompiled.txt" "${{ env.SPLASH_EXE_PATH }}"
           
-          echo "=== Tamaño de los archivos generados ==="
+          echo "Tamaño de los archivos generados:"
           ls -lh splash_strings.txt splash_main_decompiled.txt
 
-      - name: "Generar código con Qwen (IA)"
+      # ==========================================
+      # 3. QWEN GENERA EL CÓDIGO (Sin API Key manual)
+      # ==========================================
+      - name: "Qwen genera los cambios necesarios para el port"
         env:
-          # Necesitas configurar esta variable en GitHub Secrets
-          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }} 
+          # GitHub nos da este token automáticamente, no hace falta configurar nada
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cat << 'EOF' > qwen_analyzer.py
           import os
           from openai import OpenAI
 
-          # Configurar el cliente para usar la API compatible de Qwen
+          # Configurar el cliente para usar GitHub Models (Qwen gratis)
           client = OpenAI(
-              api_key=os.environ.get("DASHSCOPE_API_KEY", "dummy_key"),
-              base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+              base_url="https://models.inference.ai.azure.com",
+              api_key=os.environ["GITHUB_TOKEN"]
           )
 
-          # Leer el código descompilado y los strings
+          # Leer los archivos generados por Radare2
           with open("splash_main_decompiled.txt", "r") as f:
-              decompiled_code = f.read()[:10000] # Limitar para no exceder tokens
+              decompiled_code = f.read()[:15000] # Límite de tokens
               
           with open("splash_strings.txt", "r") as f:
-              strings_data = f.read()[:5000]
+              strings_data = f.read()[:8000]
 
           prompt = f"""
           Actúa como un experto en ingeniería inversa de software y desarrollo en C/C++.
           Tengo el código descompilado de un binario de Windows (opera_gx_splash.exe).
-          Mi objetivo es portarlo a Linux o crear un parche para que no dependa de las APIs de Windows.
+          Quiero portarlo a Linux o crear un parche para evitar depender de las APIs de Windows.
 
           Aquí tienes los Strings encontrados:
           {strings_data}
@@ -83,15 +102,16 @@ jobs:
           {decompiled_code}
 
           Por favor:
-          1. Analiza qué hace el binario.
-          2. Genera el código en C o C++ necesario para replicar esta funcionalidad en Linux.
-          3. Si ves llamadas a la API de Windows (como CreateWindow, MessageBox, etc.), sugiere sus equivalentes en GTK o Qt.
-          4. Escribe el código resultante de forma clara.
+          1. Analiza la lógica del binario.
+          2. Escribe el código en C o C++ necesario para replicar esta funcionalidad nativamente en Linux.
+          3. Si ves llamadas a la API de Windows (como CreateWindow, ShellExecute, etc.), escribe sus equivalentes en GTK, Qt o llamadas POSIX.
+          4. Explica brevemente qué hace el splash screen basándote en el código.
           """
 
+          print("Enviando datos a Qwen (vía GitHub Models)...")
           try:
               response = client.chat.completions.create(
-                  model="qwen-coder-plus", # o qwen-max, qwen-plus
+                  model="qwen2.5-coder-32b-instruct", # Modelo Qwen disponible en GitHub
                   messages=[
                       {"role": "system", "content": "Eres un experto en reversing y portabilidad de software."},
                       {"role": "user", "content": prompt}
@@ -101,28 +121,30 @@ jobs:
               
               with open("qwen_port_strategy.md", "w") as out:
                   out.write(response.choices[0].message.content)
-              print("✅ Análisis de Qwen generado con éxito.")
+              print("✅ Código y estrategia generados con éxito.")
           except Exception as e:
-              print(f"❌ Error contactando a la API de Qwen: {e}")
-              # Fallback para que no falle el workflow si no hay API key
+              print(f"❌ Error contactando con Qwen: {e}")
               with open("qwen_port_strategy.md", "w") as out:
-                  out.write("# Error\nNo se pudo conectar a la API de Qwen. Revisa tu DASHSCOPE_API_KEY.")
+                  out.write(f"# Error\nNo se pudo generar el código. Detalles: {e}")
           EOF
           
           python3 qwen_analyzer.py
 
-      - name: "Empaquetar resultados"
+      # ==========================================
+      # 4. EMPAQUETAR RESULTADOS
+      # ==========================================
+      - name: "Empaquetar resultados del port"
         run: |
           mkdir -p dist
           cp splash_main_decompiled.txt dist/
           cp splash_strings.txt dist/
           cp qwen_port_strategy.md dist/
           
-          tar -czvf dist/Opera-GX-Reverse-Port.tar.gz -C dist/ .
-          echo "¡Port generado con éxito!"
+          tar -czvf dist/Opera-GX-Qwen-Port.tar.gz -C dist/ .
+          echo "¡Paquete listo para descargar!"
 
       - name: "Subir artefacto"
         uses: actions/upload-artifact@v4
         with:
-          name: Opera-GX-Qwen-Port
-          path: dist/Opera-GX-Reverse-Port.tar.gz
+          name: Opera-GX-Port-Completo
+          path: dist/Opera-GX-Qwen-Port.tar.gz
