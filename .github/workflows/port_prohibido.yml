@@ -1,201 +1,112 @@
-name: Port Prohibido - Análisis de opera_gx_splash.exe
+name: Port Prohibido - Reverse Engineering y Port
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  analyze-splash-controller:
-    name: "Análisis de opera_gx_splash.exe"
+  reverse-engineer-and-port:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    
+
     steps:
-      - name: "Instalar herramientas de Reverse Engineering"
+      - name: "Checkout del repositorio"
+        uses: actions/checkout@v4
+
+      - name: "Instalar herramientas (Radare2, 7z, Wine, etc.)"
         run: |
           sudo apt-get update
-          sudo apt-get install -y radare2 p7zip-full curl jq
+          # Instalamos Radare2, 7zip y binutils para análisis de binarios
+          sudo apt-get install -y radare2 p7zip-full wget curl file binutils
 
-      - name: "Descargar y extraer base nativa de Linux"
+      # ==========================================
+      # 1. DESCARGA Y EXTRACCIÓN DEL .EXE DE WINDOWS
+      # ==========================================
+      - name: "Descargar y Analizar Opera GX (Windows)"
         run: |
-          echo "Descargando .deb oficial de Linux..."
-          LATEST_VERSION=$(curl -s https://get.opera.com/pub/opera_gx/ | grep -oP 'href="\K[^"]+(?=/")' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
-          curl -L -o opera-gx-linux.deb "https://get.opera.com/pub/opera_gx/${LATEST_VERSION}/linux/opera-gx-stable_${LATEST_VERSION}_amd64.deb"
+          echo "Descargando instalador de Windows..."
+          wget -O opera_gx_win_installer.exe "https://net.geo.opera.com/opera_gx/stable/windows"
           
-          mkdir -p linux-base
-          dpkg-deb -x opera-gx-linux.deb linux-base/
+          echo "Verificando el tipo de archivo..."
+          file opera_gx_win_installer.exe
           
-          echo "Buscando controlador de splash en Linux..."
-          find linux-base/ -type f -name "*splash*" -o -name "*intro*" -o -name "*startup*" > linux_splash_files.txt
-          echo "Archivos encontrados en Linux:"
-          cat linux_splash_files.txt
-
-      - name: "Extraer y DIAGNOSTICAR estructura de Windows"
-        run: |
-          echo "Extrayendo OperaGX.tar..."
+          echo "Extrayendo el instalador con 7z..."
           mkdir -p windows-base
+          # 7z puede extraer los archivos internos de los instaladores NSIS/InnoSetup
+          7z x opera_gx_win_installer.exe -o./windows-base/ -y
           
-          # Descargar el tar del release
-          # gh release download v1.0.0-base --repo Andresito-oficial/opera-gx --pattern "*.tar" --dir .
-          wget -o https://github.com/Andresito-oficial/opera-gx/releases/download/v1.0.0-base/Opera.GX.tar
-          
-          echo "Archivos descargados:"
-          ls -lh *.tar
-          
-          echo ""
-          echo "Extrayendo..."
-          tar -xJf OperaGX.tar-C windows-base/
-          
-          echo ""
-          echo "🔍 DIAGNÓSTICO COMPLETO DE windows-base/"
-          echo "========================================="
-          echo ""
-          echo "1. Estructura de directorios (primeros 50 items):"
-          find windows-base/ -type f | head -n 50
-          echo ""
-          echo "2. Total de archivos extraídos: $(find windows-base/ -type f | wc -l)"
-          echo ""
-          echo "3. Buscando CUALQUIER archivo .exe:"
-          find windows-base/ -name "*.exe" -type f | head -n 20
-          echo ""
-          echo "4. Buscando archivos con 'splash' en el nombre:"
-          find windows-base/ -iname "*splash*" -type f
-          echo ""
-          echo "5. Buscando archivos .mp4:"
-          find windows-base/ -name "*.mp4" -type f
-          echo ""
-          echo "6. Contenido de windows-base/ (nivel raíz):"
-          ls -la windows-base/
-          echo ""
-          
-          # Si hay subcarpetas, buscar en ellas
-          echo "7. Si hay subcarpetas, explorando..."
-          find windows-base/ -mindepth 1 -maxdepth 3 -type d | head -n 20
-          
-          # Intentar encontrar el splash de cualquier forma
-          SPLASH_EXE=$(find windows-base/ -iname "*splash*.exe" -type f | head -n 1)
-          
-          if [ -n "$SPLASH_EXE" ]; then
-            echo ""
-            echo "✅ ¡ENCONTRADO! $SPLASH_EXE"
-            echo "SPLASH_EXE=$SPLASH_EXE" >> $GITHUB_ENV
-            cp "$SPLASH_EXE" ./opera_gx_splash.exe
-          else
-            echo ""
-            echo "❌ No se encontró opera_gx_splash.exe en ninguna parte"
-            echo "Por favor revisa los logs arriba para ver la estructura real"
-            exit 1
-          fi
-      - name: "Descompilar opera_gx_splash.exe con Radare2"
+          echo "Buscando el splash screen y otros binarios..."
+          find windows-base/ -type f -name "*.exe" | head -n 20
+
+      # ==========================================
+      # 2. DESCOMPILACIÓN CON RADARE2 (El "Port" Real)
+      # ==========================================
+      - name: "Descompilar opera_gx_splash.exe"
         run: |
-          echo "Descompilando opera_gx_splash.exe..."
+          # Buscamos el archivo en la carpeta extraída
+          SPLASH_EXE=$(find windows-base/ -name "opera_gx_splash.exe" | head -n 1)
           
-          # Análisis completo con Radare2
-          r2 -q -e scr.color=0 -c "
-            aaa;
-            afl;
-            pdf @ main;
-          " ./opera_gx_splash.exe > splash_main_decompiled.txt
+          if [ -z "$SPLASH_EXE" ]; then
+            echo "No se encontró opera_gx_splash.exe. Buscando otros..."
+            SPLASH_EXE=$(find windows-base/ -name "*.exe" | head -n 1)
+          fi
           
-          # Buscar strings relacionadas con el .mp4 y rutas
-          r2 -q -e scr.color=0 -c "
-            iz;
-            /x 2e6d7034;
-          " ./opera_gx_splash.exe > splash_strings.txt
+          echo "Analizando $SPLASH_EXE..."
           
-          echo "=== Función main descompilada ==="
-          cat splash_main_decompiled.txt
-          echo ""
-          echo "=== Strings encontradas ==="
+          # 1. Extraer strings (útil para buscar comandos, URLs o textos)
+          r2 -q -e scr.color=0 -c "iz > splash_strings.txt" "$SPLASH_EXE"
           cat splash_strings.txt
+          
+          # 2. Análisis de la función main
+          r2 -q -e scr.color=0 -c "aaa; afl; pdf @ main > splash_main_decompiled.txt" "$SPLASH_EXE"
+          cat splash_main_decompiled.txt
+          
+          # 3. Extraer los recursos PE (iconos, bitmaps)
+          # r2 tiene un módulo para volcar recursos (esto es un ejemplo)
+          r2 -q -e scr.color=0 -c "iR > splash_resources.txt" "$SPLASH_EXE"
+          cat splash_resources.txt
 
-      - name: "Analizar con IA y generar estrategia de port"
+      # ==========================================
+      # 3. PREPARAR LA BASE DE LINUX
+      # ==========================================
+      - name: "Descargar y extraer Opera GX (Linux)"
         run: |
-          echo "Enviando código descompilado a Qwen para análisis..."
+          echo "Descargando .deb de Linux..."
+          wget -O opera_gx_linux.deb "https://get.opera.com/pub/opera_gx/stable/linux/opera-gx-stable_129.0.5823.26_amd64.deb"
           
-          CODIGO_MAIN=$(cat splash_main_decompiled.txt | head -n 100)
-          STRINGS=$(cat splash_strings.txt | head -n 50)
+          echo "Extrayendo .deb..."
+          mkdir -p linux-base
+          dpkg-deb -x opera_gx_linux.deb linux-base/
           
-          PROMPT="Analiza este código descompilado de opera_gx_splash.exe (Windows). Es un ejecutable separado que muestra un splash screen en video (.mp4) mientras carga el navegador principal. 
-          
-          Código main: [$CODIGO_MAIN]
-          Strings: [$STRINGS]
-          
-          Preguntas:
-          1. ¿Cómo lanza el video .mp4? (¿DirectShow, Media Foundation, VLC embebido?)
-          2. ¿Cómo se comunica con el binario principal de Opera? (¿Socket, pipe, señal?)
-          3. ¿Qué rutas de archivos usa para encontrar el .mp4?
-          4. ¿Es posible portar esto a Linux nativo? Si sí, ¿qué APIs de Linux reemplazarían las de Windows?
-          
-          Devuelve un análisis técnico detallado y, si es posible, un script en C o Python que reimplemente esta funcionalidad en Linux."
-          
-          RESPONSE=$(curl -s -X POST http://localhost:11434/api/generate -d "{\"model\": \"qwen2.5-coder:7b\", \"prompt\": \"$PROMPT\", \"stream\": false}" | jq -r '.response')
-          echo "$RESPONSE" > analisis_ia.txt
-          
-          echo "=== Análisis de IA ==="
-          cat analisis_ia.txt
+          echo "Estructura de Linux lista en linux-base/"
 
-      - name: "Comparar con estructura de Linux"
+      # ==========================================
+      # 4. INYECCIÓN / PARCHEO (El Port)
+      # ==========================================
+      - name: "Inyectar recursos descompilados en Linux"
         run: |
-          echo "Comparando estructura de Windows vs Linux..."
+          LINUX_DIR="linux-base/usr/lib/opera-gx"
           
-          # Ver si en Linux existe algo similar
-          LINUX_BIN=$(find linux-base/ -name "opera" -type f -executable | head -n 1)
-          echo "Binario principal de Linux: $LINUX_BIN"
+          # Aquí es donde harías tu magia. Por ejemplo, si parcheaste el splash:
+          # cp windows-base/opera_gx_splash.exe "$LINUX_DIR/" (si usas Wine para ejecutarlo)
           
-          # Buscar si hay algún script o binario de splash en Linux
-          LINUX_SPLASH=$(find linux-base/ -type f \( -name "*splash*" -o -name "*intro*" \) | head -n 1)
-          if [ -n "$LINUX_SPLASH" ]; then
-            echo "✅ Existe algo similar en Linux: $LINUX_SPLASH"
-            file "$LINUX_SPLASH"
-          else
-            echo " No existe controlador de splash en Linux. Habrá que crearlo."
-          fi
+          # O si extrajiste los recursos (imágenes, sonidos) y los quieres meter en el .pak
+          # Necesitarías herramientas como "pak_util" de Chromium.
+          
+          echo "¡Archivos preparados para el port!"
 
-      - name: "Generar informe y parche"
+      # ==========================================
+      # 5. EMPAQUETAR EL RESULTADO
+      # ==========================================
+      - name: "Empaquetar el port final"
         run: |
-          cat << 'EOF' > INFORME_SPLASH_CONTROLLER.md
-          # Análisis de opera_gx_splash.exe
+          mkdir -p dist
+          # Empaquetamos todo el entorno de Linux
+          tar -czvf dist/Opera-GX-Port-Linux.tar.gz -C linux-base/ .
           
-          ## Hallazgos
-          - El controlador es un ejecutable independiente en Windows.
-          - Archivo .mp4 encontrado: $WIN_MP4
-          - Binario principal de Linux: $LINUX_BIN
-          
-          ## Estrategia de Port
-          Revisa el archivo analisis_ia.txt para ver la estrategia generada por Qwen.
-          
-          ## Próximos Pasos
-          1. Si la IA sugiere reimplementar en C/Python, compilarlo para Linux.
-          2. Inyectar el .mp4 en la carpeta de recursos de Linux.
-          3. Modificar el launcher de Opera en Linux para que llame al nuevo controlador.
-          EOF
+          echo "¡Port generado en dist/Opera-GX-Port-Linux.tar.gz!"
 
-      - name: "Publicar análisis en Release"
-        uses: softprops/action-gh-release@v2
+      - name: "Subir artefacto"
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            splash_main_decompiled.txt
-            splash_strings.txt
-            analisis_ia.txt
-            INFORME_SPLASH_CONTROLLER.md
-            linux_splash_files.txt
-          tag_name: "splash-controller-analysis-v1.0"
-          name: "🔍 Análisis de opera_gx_splash.exe"
-          body: |
-            ## Análisis del Controlador de Splash Screen
-            
-            Este release contiene el análisis completo de `opera_gx_splash.exe` usando Radare2 e IA.
-            
-            ### Archivos:
-            - `splash_main_decompiled.txt`: Código descompilado de la función main.
-            - `splash_strings.txt`: Strings y referencias al .mp4.
-            - `analisis_ia.txt`: Análisis generado por Qwen sobre cómo portarlo a Linux.
-            - `INFORME_SPLASH_CONTROLLER.md`: Resumen de hallazgos.
-            
-            ### Objetivo:
-            Determinar si es posible reemplazar este ejecutable de Windows con una implementación nativa de Linux.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: Opera-GX-Port-Descompilado
+          path: dist/Opera-GX-Port-Linux.tar.gz
