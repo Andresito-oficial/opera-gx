@@ -24,25 +24,58 @@ jobs:
       # ==========================================
       - name: "Descargar y extraer Opera GX (Windows)"
         run: |
+          set -euxo pipefail
+
           echo "Descargando instalador de Windows..."
           wget -O opera_gx_win_installer.exe "https://net.geo.opera.com/opera_gx/stable/windows"
+
           echo "Verificando el tipo de archivo..."
-          file opera_gx_win_installer.exe
-          echo "Extrayendo el instalador con 7z (adiós problemas de untar)..."
+          file opera_gx_win_installer.exe || true
+
+          echo "Creando directorio de extracción..."
           mkdir -p windows-base
-          7z x opera_gx_win_installer.exe -o./windows-base/ -y
-          echo "Buscando el splash screen..."
-          SPLASH_EXE=$(find windows-base/ -name "opera_gx_splash.exe" | head -n 1)
-          if [ -z "$SPLASH_EXE" ]; then
-            echo "No se encontró opera_gx_splash.exe, buscando otro binario principal..."
-            SPLASH_EXE=$(find windows-base/ -name "opera.exe" | head -n 1)
+
+          echo "Extrayendo el instalador inicial..."
+          7z x opera_gx_win_installer.exe -o./windows-base/ -y || true
+
+          echo "Listando lo que ha quedado dentro del instalador..."
+          find windows-base -maxdepth 6 -type f | sed -n '1,200p' || true
+
+          echo "Buscando binarios Windows reales dentro del instalador (incluye subdirectorios)..."
+          mapfile -t ALL_EXES < <(find windows-base -type f -iname "*.exe" | sort)
+          echo "Ejecutables encontrados: ${#ALL_EXES[@]}"
+          for exe in "${ALL_EXES[@]}"; do
+            echo "== $exe =="
+            file "$exe" || true
+          done
+
+          echo "Intentando localizar el binario principal de Opera/GX o splash screen..."
+          SPLASH_EXE=$(find windows-base -type f \( -iname "*opera*.exe" -o -iname "*splash*.exe" -o -iname "*launcher*.exe" -o -iname "*setup*.exe" \) | head -n 1)
+
+          # Si el instalador trae un paquete interno o un SFX con un segundo exe, lo extraemos también.
+          if [ -z "$SPLASH_EXE" ] && [ "${#ALL_EXES[@]}" -gt 0 ]; then
+            for exe in "${ALL_EXES[@]}"; do
+              if 7z l "$exe" >/dev/null 2>&1; then
+                echo "Intentando extraer contenido anidado desde: $exe"
+                7z x "$exe" -o"windows-base/nested_$(basename "$exe")" -y >/dev/null 2>&1 || true
+              fi
+            done
+            SPLASH_EXE=$(find windows-base -type f \( -iname "*opera*.exe" -o -iname "*splash*.exe" -o -iname "*launcher*.exe" -o -iname "*setup*.exe" \) | head -n 1)
           fi
+
           if [ -z "$SPLASH_EXE" ]; then
+            echo "No se encontró ningún exe de Opera GX en la extracción. Buscando cualquier PE ejecutable del paquete..."
+            SPLASH_EXE=$(find windows-base -type f -iname "*.exe" | head -n 1)
+          fi
+
+          if [ -z "$SPLASH_EXE" ] || [ ! -f "$SPLASH_EXE" ]; then
             echo "❌ Error: No se encontró ningún binario para analizar."
+            echo "Esto suele pasar cuando el instalador descargado es un stub o un paquete que embebe un segundo archivo en otra capa."
             exit 1
           fi
+
           echo "Archivo seleccionado: $SPLASH_EXE"
-          echo "SPLASH_EXE_PATH=$SPLASH_EXE" >> $GITHUB_ENV
+          echo "SPLASH_EXE_PATH=$SPLASH_EXE" >> "$GITHUB_ENV"
 
       # ==========================================
       # 2. DESCOMPILAR CON RADARE2
