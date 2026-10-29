@@ -80,11 +80,11 @@ jobs:
           Write-Host "Tamaño de los archivos generados:"
           Get-Item splash_strings.txt, splash_main_decompiled.txt | Select-Object Name, Length
 
-      # ==========================================
+            # ==========================================
       # 3. NVIDIA NIM GENERA EL CÓDIGO (NEMOTRON)
       # ==========================================
       - name: "NVIDIA NIM genera los cambios necesarios para el port"
-        shell: pwsh
+        shell: bash # <--- CAMBIO: Usar bash en lugar de pwsh para el heredoc
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
