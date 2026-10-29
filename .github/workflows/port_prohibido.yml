@@ -56,15 +56,17 @@ jobs:
       # 2. ANALIZAR CON PYTHON + NIM
       # ==========================================
       - name: "Reparar y Portar con NVIDIA NIM"
-        shell: bash
+        shell: pwsh # <-- Cambiado a PowerShell
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           PYTHONUTF8: "1"
           PYTHONIOENCODING: "utf-8"
         run: |
-          cat << 'EOF' > nim_analyzer.py
+          # Escribimos el archivo de Python con la sintaxis de PowerShell (Here-String)
+          @'
           import os
           import time
+          import subprocess
           from openai import OpenAI, RateLimitError, NotFoundError, APIStatusError
 
           client = OpenAI(
@@ -72,12 +74,12 @@ jobs:
               api_key=os.environ["NVIDIA_API_KEY"]
           )
 
-          with open("files_list.txt", "r", encoding="utf-8") as f:
+          with open("files_list.txt", "r", encoding="utf-8-sig") as f:
               files = [line.strip() for line in f if line.strip()]
 
           report_file = "Reporte_Reparacion_OperaGX.md"
           with open(report_file, "w", encoding="utf-8") as f:
-              f.write("# Reporte de Portabilidad y Reparación\n\n")
+              f.write("# Reporte de Portabilidad y Reparacion\n\n")
 
           for file_path in files:
               file_name = os.path.basename(file_path)
@@ -87,25 +89,24 @@ jobs:
               prompt = ""
 
               if ext in ['exe', 'dll']:
-                  strings_file = f"/tmp/{file_name}_strings.txt"
-                  exports_file = f"/tmp/{file_name}_exports.txt"
-                  
-                  os.system(f'r2 -q -e scr.color=0 -c "iz" "{file_path}" > "{strings_file}" 2>/dev/null')
-                  os.system(f'r2 -q -e scr.color=0 -c "iE" "{file_path}" > "{exports_file}" 2>/dev/null')
+                  strings_data = ""
+                  exports_data = ""
                   
                   try:
-                      with open(strings_file, "r", errors="ignore") as f:
-                          strings_data = f.read()[:3000]
-                      with open(exports_file, "r", errors="ignore") as f:
-                          exports_data = f.read()[:3000]
-                  except FileNotFoundError:
-                      strings_data = exports_data = "No data"
+                      # Ejecutamos Radare2 usando subprocess (evita errores de rutas en Windows)
+                      res_strings = subprocess.run(["r2", "-q", "-e", "scr.color=0", "-c", "iz", file_path], capture_output=True, text=True, encoding="utf-8", errors="ignore")
+                      strings_data = res_strings.stdout[:3000]
+                      
+                      res_exports = subprocess.run(["r2", "-q", "-e", "scr.color=0", "-c", "iE", file_path], capture_output=True, text=True, encoding="utf-8", errors="ignore")
+                      exports_data = res_exports.stdout[:3000]
+                  except Exception as e:
+                      print(f"  [WARN] Error ejecutando Radare2: {e}")
                   
                   prompt = f"""
-                  Analiza este binario/librería de Windows: "{file_name}".
-                  1. Deduce su propósito.
-                  2. Identifica funciones exportadas clave (si es DLL) o APIs críticas.
-                  3. Propón la estrategia exacta para portarlo a Linux.
+                  Analiza este binario/libreria de Windows: "{file_name}".
+                  1. Deduce su proposito.
+                  2. Identifica funciones exportadas clave (si es DLL) o APIs criticas.
+                  3. Propon la estrategia exacta para portarlo a Linux.
 
                   EXPORTS:
                   {exports_data}
@@ -121,17 +122,16 @@ jobs:
                       content = "[Archivo binario o ilegible]"
                   
                   if len(content) > 5000:
-                      content = content[:5000] + "\n...[TRUNCATED]..."
+                      content = content[:5000] + "\n...[TRUNCADO]..."
 
                   prompt = (
-                      'Analiza este archivo de configuración de Windows: "' + file_name + '".\n'
-                      '1. Identifica las partes del código que romperán en Linux.\n'
-                      '2. Reescribe el CONTENIDO COMPLETO adaptándolo a Linux.\n'
-                      '3. Devuelve SOLO el bloque de código reparado.\n\n'
+                      'Analiza este archivo de configuracion de Windows: "' + file_name + '".\n'
+                      '1. Identifica las partes del codigo que romperan en Linux.\n'
+                      '2. Reescribe el CONTENIDO COMPLETO adaptandolo a Linux.\n'
+                      '3. Devuelve SOLO el bloque de codigo reparado.\n\n'
                       'CONTENIDO ORIGINAL:\n```\n' + content + '\n```'
                   )
 
-              # Modelo principal actual (Nemotron 3.5 Super VL 120B)
               payload_model = "nvidia/nemotron-3.5-super-vl-120b-a12b"
               success = False
               retries = 0
@@ -151,39 +151,35 @@ jobs:
                           f.write(f"**Tipo:** {ext.upper()}\n\n")
                           f.write(f"{result}\n")
                       
-                      print(f"[OK] {file_name} analizado con {payload_model}.")
+                      print(f"[OK] {file_name} analizado.")
                       success = True
                       
                   except RateLimitError:
-                      print("[WARN] Límite de RPM alcanzado. Esperando 15 segundos...")
+                      print("[WARN] Limite de RPM alcanzado. Esperando 15 segundos...")
                       time.sleep(15)
                       retries += 1
                   except NotFoundError:
-                      print("[ERROR] Modelo no encontrado. Revisa el ID del modelo.")
+                      print("[ERROR] Modelo no encontrado.")
                       break
                   except APIStatusError as e:
                       if e.status_code == 410:
-                          print(f"[WARN] El modelo {payload_model} ya no está disponible (410).")
-                          # Fallback al modelo Lightning 30B-A3B
-                          print("[INFO] Cambiando al modelo de respaldo nvidia/nemotron-3.5-lightning-30b-a3b...")
+                          print(f"[WARN] El modelo {payload_model} ya no esta disponible. Cambiando a Lightning...")
                           payload_model = "nvidia/nemotron-3.5-lightning-30b-a3b"
                           retries += 1
                       else:
                           print(f"[ERROR] Error de API ({e.status_code}) con {file_name}: {e}")
-                          with open(report_file, "a", encoding="utf-8") as f:
-                              f.write(f"\n\n## Componente: `{file_name}`\n[Error: {str(e)}]\n")
                           success = True
                   except Exception as e:
                       print(f"[ERROR] Error inesperado con {file_name}: {e}")
-                      with open(report_file, "a", encoding="utf-8") as f:
-                          f.write(f"\n\n## Componente: `{file_name}`\n[Error: {str(e)}]\n")
                       success = True
                           
               time.sleep(2)
 
-          print("[DONE] Proceso de reparación completado.")
-          EOF
-          python3 nim_analyzer.py
+          print("[DONE] Proceso de reparacion completado.")
+          '@ | Out-File -FilePath nim_analyzer.py -Encoding utf8
+          
+          # Ejecutamos el script
+          python nim_analyzer.py
 
       - name: "Subir reporte de reparación"
         if: always()
