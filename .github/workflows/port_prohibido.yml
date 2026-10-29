@@ -40,7 +40,7 @@ jobs:
           }
           
           if (-not $install_dir) {
-            Write-Host "❌ No se encontró la carpeta de instalación."
+            Write-Host "[ERROR] No se encontró la carpeta de instalación."
             exit 1
           }
           echo "Directorio encontrado: $install_dir"
@@ -56,14 +56,16 @@ jobs:
       # 2. ANALIZAR CON PYTHON + NIM
       # ==========================================
       - name: "Reparar y Portar con NVIDIA NIM"
-        shell: bash # Usamos bash para el heredoc de Python
+        shell: bash
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
         run: |
           cat << 'EOF' > nim_analyzer.py
           import os
           import time
-          from openai import OpenAI, RateLimitError, NotFoundError
+          from openai import OpenAI, RateLimitError, NotFoundError, APIStatusError
 
           client = OpenAI(
               base_url="https://integrate.api.nvidia.com/v1",
@@ -85,11 +87,9 @@ jobs:
               prompt = ""
 
               if ext in ['exe', 'dll']:
-                  # Es un binario
                   strings_file = f"/tmp/{file_name}_strings.txt"
                   exports_file = f"/tmp/{file_name}_exports.txt"
                   
-                  # En Windows, las rutas con espacios deben ir entre comillas
                   os.system(f'r2 -q -e scr.color=0 -c "iz" "{file_path}" > "{strings_file}" 2>/dev/null')
                   os.system(f'r2 -q -e scr.color=0 -c "iE" "{file_path}" > "{exports_file}" 2>/dev/null')
                   
@@ -114,7 +114,6 @@ jobs:
                   {strings_data}
                   """
               else:
-                  # Es un archivo de texto (JSON, INI, XML)
                   try:
                       with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                           content = f.read()
@@ -122,7 +121,7 @@ jobs:
                       content = "[Archivo binario o ilegible]"
                   
                   if len(content) > 5000:
-                      content = content[:5000] + "\n...[TRUNCADO]..."
+                      content = content[:5000] + "\n...[TRUNCATED]..."
 
                   prompt = (
                       'Analiza este archivo de configuración de Windows: "' + file_name + '".\n'
@@ -132,7 +131,8 @@ jobs:
                       'CONTENIDO ORIGINAL:\n```\n' + content + '\n```'
                   )
 
-              payload_model = "nvidia/nemotron-3-super-120b-a12b"
+              # Modelo principal actual (Nemotron 3.5 Super VL 120B)
+              payload_model = "nvidia/nemotron-3.5-super-vl-120b-a12b"
               success = False
               retries = 0
 
@@ -151,27 +151,37 @@ jobs:
                           f.write(f"**Tipo:** {ext.upper()}\n\n")
                           f.write(f"{result}\n")
                       
-                      print(f"✅ {file_name} analizado.")
+                      print(f"[OK] {file_name} analizado con {payload_model}.")
                       success = True
                       
                   except RateLimitError:
-                      print("⚠️ Límite de RPM alcanzado. Esperando 15 segundos...")
+                      print("[WARN] Límite de RPM alcanzado. Esperando 15 segundos...")
                       time.sleep(15)
                       retries += 1
                   except NotFoundError:
-                      print("Modelo 404. Cambiando a Nemotron Nano...")
-                      payload_model = "nvidia/nemotron-3-nano-30b-a3b"
-                      retries += 1
+                      print("[ERROR] Modelo no encontrado. Revisa el ID del modelo.")
+                      break
+                  except APIStatusError as e:
+                      if e.status_code == 410:
+                          print(f"[WARN] El modelo {payload_model} ya no está disponible (410).")
+                          # Fallback al modelo Lightning 30B-A3B
+                          print("[INFO] Cambiando al modelo de respaldo nvidia/nemotron-3.5-lightning-30b-a3b...")
+                          payload_model = "nvidia/nemotron-3.5-lightning-30b-a3b"
+                          retries += 1
+                      else:
+                          print(f"[ERROR] Error de API ({e.status_code}) con {file_name}: {e}")
+                          with open(report_file, "a", encoding="utf-8") as f:
+                              f.write(f"\n\n## Componente: `{file_name}`\n[Error: {str(e)}]\n")
+                          success = True
                   except Exception as e:
-                      print(f"❌ Error con {file_name}: {e}")
+                      print(f"[ERROR] Error inesperado con {file_name}: {e}")
                       with open(report_file, "a", encoding="utf-8") as f:
                           f.write(f"\n\n## Componente: `{file_name}`\n[Error: {str(e)}]\n")
                       success = True
                           
-              # Pausa de 2 segundos
               time.sleep(2)
 
-          print("✅ Proceso de reparación completado.")
+          print("[DONE] Proceso de reparación completado.")
           EOF
           python3 nim_analyzer.py
 
