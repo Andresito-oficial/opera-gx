@@ -1,5 +1,7 @@
 name: Port Prohibido - Análisis Windows y NVIDIA NIM
-on: workflow_dispatch:
+on:
+  workflow_dispatch:
+
 jobs:
   reverse-engineer-and-port:
     runs-on: ubuntu-latest
@@ -90,7 +92,6 @@ jobs:
           ### Propuesta de Port:
           """
 
-          # Uso del modelo Nemotron 120B de NVIDIA
           response = client.chat.completions.create(
               model="nvidia/nemotron-3-super-120b-a12b",
               messages=[{"role": "user", "content": prompt}],
