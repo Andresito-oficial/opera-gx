@@ -1,11 +1,11 @@
-name: Port Prohibido - Análisis Completo y NVIDIA NIM
+name: Port Prohibido - Reparación Total (Binarios, DLLs y JSONs)
 on:
   workflow_dispatch:
 
 jobs:
   reverse-engineer-and-port:
-    runs-on: windows-latest
-    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 
     permissions:
       contents: read
 
@@ -13,112 +13,147 @@ jobs:
       - name: "Checkout del repositorio"
         uses: actions/checkout@v4
 
-      - name: "Instalar herramientas (Radare2, Python)"
+      - name: "Instalar herramientas"
         run: |
-          choco install radare2 -y
+          sudo apt-get update
+          sudo apt-get install -y radare2 python3 python3-pip
           pip install openai
 
-      - name: "Instalar Opera GX vía Winget"
+      - name: "Extraer e identificar TODOS los archivos"
         run: |
-          winget install --id Opera.OperaGX -e --silent --accept-package-agreements --accept-source-agreements
-          Start-Sleep -Seconds 10
-
-      - name: "Localizar binarios y generar lista"
-        id: find_exes
-        shell: pwsh
-        run: |
-          $common_paths = @(
-            "$env:LOCALAPPDATA\Programs\Opera GX",
-            "C:\Program Files\Opera GX",
-            "C:\Program Files (x86)\Opera GX"
-          )
-          
-          $install_dir = $null
-          foreach ($path in $common_paths) {
-            if (Test-Path $path) {
-              $install_dir = $path
-              break
-            }
-          }
-          if (-not $install_dir) {
-            Write-Host "❌ No se encontró la carpeta de instalación."
+          if [ -f "Opera GX.tar" ]; then
+            tar -xf "Opera GX.tar"
+          else
+            echo "❌ No se encontró 'Opera GX.tar'."
             exit 1
-          }
-          Write-Host "Directorio encontrado: $install_dir"
-          echo "INSTALL_DIR=$install_dir" >> $env:GITHUB_ENV
-
-          # Listar todos los .exe
-          Get-ChildItem -Path $install_dir -Filter "*.exe" -Recurse | Select-Object FullName | Out-File -FilePath exes.txt
+          fi
           
-          Write-Host "Lista de ejecutables generada en exes.txt"
-          Get-Content exes.txt
+          # Buscamos binarios (exe, dll) y textos (json, ini, xml)
+          find . -type f \( -name "*.exe" -o -name "*.dll" -o -name "*.json" -o -name "*.ini" -o -name "*.xml" \) ! -name "*.sh" ! -name "*.py" > files_list.txt
+          
+          echo "Total de componentes a analizar:"
+          wc -l files_list.txt
 
-      - name: "Analizar componentes y generar reporte con NVIDIA NIM"
-        shell: pwsh
+      - name: "Reparar y Portar con NVIDIA NIM"
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
-          $exes = Get-Content exes.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '\.exe$' }
-          # Limitamos a los primeros 5 para evitar timeouts
-          $limit = 5
-          $count = 0
+          cat << 'EOF' > nim_analyzer.py
+          import os
+          import time
+          from openai import OpenAI, RateLimitError, NotFoundError
 
-          foreach ($exe in $exes) {
-            if ($count -ge $limit) { break }
-            $count++
-            $fileName = Split-Path $exe -Leaf
-            Write-Host "Analizando: $fileName"
-            
-            # Extraer strings con r2
-            r2 -q -e scr.color=0 -c "iz" "$exe" > "$fileName_strings.txt"
-            # Descompilar main (si existe)
-            r2 -q -e scr.color=0 -c "aaa; s main; pdf" "$exe" > "$fileName_decompiled.txt" 2>$null
-            
-            $prompt = @"
-            Analiza el binario de Windows "$fileName" (parte de Opera GX).
-            Basado en el código descompilado y los strings extraídos, proporciona:
-            1. Propósito del binario.
-            2. Dependencias críticas de Windows (APIs, DLLs).
-            3. Plan de portabilidad a Linux (herramientas, librerías sustitutas, pasos).
-            
-            Strings extraídos:
-            $(Get-Content "$fileName_strings.txt" -Raw -ErrorAction SilentlyContinue | Select-Object -First 5000)
-            
-            Código descompilado (main):
-            $(Get-Content "$fileName_decompiled.txt" -Raw -ErrorAction SilentlyContinue | Select-Object -First 15000)
-            "@
-            
-            # Construir el cuerpo de la petición
-            $body = @{
-              model = "nvidia/nemotron-3-super-120b-a12b"
-              messages = @(@{ role = "user"; content = $prompt })
-              temperature = 0.2
-              max_tokens = 4096
-            } | ConvertTo-Json -Depth 10
+          client = OpenAI(
+              base_url="https://integrate.api.nvidia.com/v1",
+              api_key=os.environ["NVIDIA_API_KEY"]
+          )
 
-            try {
-              $response = Invoke-RestMethod -Uri "https://integrate.api.nvidia.com/v1/chat/completions" -Method Post -Headers @{ "Authorization" = "Bearer $env:NVIDIA_API_KEY"; "Content-Type" = "application/json" } -Body $body
-              $response.choices[0].message.content | Out-File -FilePath "port_report_$fileName.txt"
-              Write-Host "Reporte generado para $fileName"
-            } catch {
-              Write-Host "Error con $fileName : $_"
-              # Fallback a otro modelo si es 404
-              if ($_.Exception.Response.StatusCode -eq 'NotFound') {
-                  Write-Host "Intentando con nemotron-3-nano-30b-a3b..."
-                  $body.model = "nvidia/nemotron-3-nano-30b-a3b"
-                  try {
-                      $response = Invoke-RestMethod -Uri "https://integrate.api.nvidia.com/v1/chat/completions" -Method Post -Headers @{ "Authorization" = "Bearer $env:NVIDIA_API_KEY"; "Content-Type" = "application/json" } -Body $body
-                      $response.choices[0].message.content | Out-File -FilePath "port_report_$fileName.txt"
-                      Write-Host "Reporte generado para $fileName (fallback)"
-                  } catch {
-                      Write-Host "Fallback también falló para $fileName"
-                  }
-              }
-            }
-          }
+          with open("files_list.txt", "r") as f:
+              files = [line.strip() for line in f if line.strip()]
 
-      - name: "Subir reportes como artefacto"
+          report_file = "Reporte_Reparacion_OperaGX.md"
+          with open(report_file, "w", encoding="utf-8") as f:
+              f.write("# Reporte de Portabilidad y Reparación\n\n")
+
+          for file_path in files:
+              file_name = os.path.basename(file_path)
+              ext = file_path.split('.')[-1].lower()
+              print(f"Analizando: {file_name}...")
+
+              prompt = ""
+
+              if ext in ['exe', 'dll']:
+                  # Es un binario. Extraemos strings y exports (para DLLs)
+                  strings_file = f"/tmp/{file_name}_strings.txt"
+                  exports_file = f"/tmp/{file_name}_exports.txt"
+                  
+                  os.system(f"r2 -q -e scr.color=0 -c 'iz' '{file_path}' > {strings_file} 2>/dev/null")
+                  os.system(f"r2 -q -e scr.color=0 -c 'iE' '{file_path}' > {exports_file} 2>/dev/null")
+                  
+                  with open(strings_file, "r", errors="ignore") as f:
+                      strings_data = f.read()[:3000]
+                  with open(exports_file, "r", errors="ignore") as f:
+                      exports_data = f.read()[:3000]
+                  
+                  prompt = f"""
+                  Analiza este binario/librería de Windows: "{file_name}".
+                  1. Deduce su propósito.
+                  2. Identifica las funciones exportadas clave (si es una DLL) o APIs de sistema críticas.
+                  3. Propón la estrategia exacta para portarlo a Linux (ej. reemplazar por librerías nativas, reescribir en Python/C++, o usar Wine).
+
+                  EXPORTS:
+                  {exports_data}
+
+                  STRINGS:
+                  {strings_data}
+                  """
+              else:
+                  # Es un archivo de texto (JSON, INI, XML). Lo leemos directamente.
+                  try:
+                      with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                          content = f.read()
+                  except Exception:
+                      content = "[Archivo binario o ilegible]"
+                  
+                  if len(content) > 5000:
+                      content = content[:5000] + "\n...[TRUNCADO]..."
+
+                  # Usamos concatenación de strings para evitar errores con las llaves {} del JSON
+                  prompt = (
+                      'Analiza este archivo de configuración/manifiesto de Windows: "' + file_name + '".\n'
+                      'Contiene rutas de Windows, variables de entorno o configuraciones específicas.\n'
+                      '1. Identifica las partes del código que romperán en Linux (ej. "C:\\Windows", "%APPDATA%").\n'
+                      '2. Reescribe el CONTENIDO COMPLETO del archivo adaptándolo a Linux (ej. "/usr/share", "~/.config").\n'
+                      '3. Devuelve SOLO el bloque de código reparado.\n\n'
+                      'CONTENIDO ORIGINAL:\n```\n' + content + '\n```'
+                  )
+
+              payload_model = "nvidia/nemotron-3-super-120b-a12b"
+              success = False
+              retries = 0
+
+              while not success and retries < 3:
+                  try:
+                      response = client.chat.completions.create(
+                          model=payload_model,
+                          messages=[{"role": "user", "content": prompt}],
+                          temperature=0.2,
+                          max_tokens=2048
+                      )
+                      result = response.choices[0].message.content
+                      
+                      with open(report_file, "a", encoding="utf-8") as f:
+                          f.write(f"\n\n## Componente: `{file_name}`\n")
+                          f.write(f"**Tipo:** {ext.upper()}\n\n")
+                          f.write(f"{result}\n")
+                      
+                      print(f"✅ {file_name} analizado.")
+                      success = True
+                      
+                  except RateLimitError:
+                      print("⚠️ Límite de RPM alcanzado. Esperando 15 segundos...")
+                      time.sleep(15)
+                      retries += 1
+                  except NotFoundError:
+                      print("Modelo 404. Cambiando a Nemotron Nano...")
+                      payload_model = "nvidia/nemotron-3-nano-30b-a3b"
+                      retries += 1
+                  except Exception as e:
+                      print(f"❌ Error con {file_name}: {e}")
+                      with open(report_file, "a", encoding="utf-8") as f:
+                          f.write(f"\n\n## Componente: `{file_name}`\n[Error: {str(e)}]\n")
+                      success = True
+                          
+              # Respetar el límite de 40 RPM (Pausa de 2 segundos)
+              time.sleep(2)
+
+          print("✅ Proceso de reparación completado.")
+          EOF
+          python3 nim_analyzer.py
+
+      - name: "Subir reporte de reparación"
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: porting-reports
-          path: port_report_*.txt
+          name: reporte-reparacion-opera-gx
+          path: Reporte_Reparacion_OperaGX.md
