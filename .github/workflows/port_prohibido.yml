@@ -1,11 +1,11 @@
-name: Port Prohibido - Reparación Total (Binarios, DLLs y JSONs)
+name: Port Prohibido - Reparación Total con Winget y NVIDIA NIM
 on:
   workflow_dispatch:
 
 jobs:
   reverse-engineer-and-port:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360 
+    runs-on: windows-latest
+    timeout-minutes: 360
     permissions:
       contents: read
 
@@ -13,28 +13,50 @@ jobs:
       - name: "Checkout del repositorio"
         uses: actions/checkout@v4
 
-      - name: "Instalar herramientas"
+      - name: "Instalar herramientas (Radare2, Python)"
         run: |
-          sudo apt-get update
-          sudo apt-get install -y radare2 python3 python3-pip
+          choco install radare2 -y
           pip install openai
 
-      - name: "Extraer e identificar TODOS los archivos"
+      # ==========================================
+      # 1. INSTALAR OPERA GX Y BUSCAR ARCHIVOS
+      # ==========================================
+      - name: "Instalar Opera GX vía Winget y listar archivos"
+        shell: pwsh
         run: |
-          if [ -f "Opera GX.tar" ]; then
-            tar -xf "Opera GX.tar"
-          else
-            echo "❌ No se encontró 'Opera GX.tar'."
+          echo "Instalando Opera GX..."
+          winget install --id Opera.OperaGX -e --silent --accept-package-agreements --accept-source-agreements
+          Start-Sleep -Seconds 15
+          
+          $common_paths = @(
+            "$env:LOCALAPPDATA\Programs\Opera GX",
+            "C:\Program Files\Opera GX",
+            "C:\Program Files (x86)\Opera GX"
+          )
+          
+          $install_dir = $null
+          foreach ($path in $common_paths) {
+            if (Test-Path $path) { $install_dir = $path; break }
+          }
+          
+          if (-not $install_dir) {
+            Write-Host "❌ No se encontró la carpeta de instalación."
             exit 1
-          fi
-          
-          # Buscamos binarios (exe, dll) y textos (json, ini, xml)
-          find . -type f \( -name "*.exe" -o -name "*.dll" -o -name "*.json" -o -name "*.ini" -o -name "*.xml" \) ! -name "*.sh" ! -name "*.py" > files_list.txt
-          
-          echo "Total de componentes a analizar:"
-          wc -l files_list.txt
+          }
+          echo "Directorio encontrado: $install_dir"
 
+          # Buscamos TODOS los archivos relevantes
+          $extensions = @("*.exe", "*.dll", "*.json", "*.ini", "*.xml")
+          $files = Get-ChildItem -Path $install_dir -Recurse -Include $extensions | Select-Object -ExpandProperty FullName
+          
+          $files | Out-File -FilePath files_list.txt -Encoding utf8
+          Write-Host "Total de componentes a analizar: $($files.Count)"
+
+      # ==========================================
+      # 2. ANALIZAR CON PYTHON + NIM
+      # ==========================================
       - name: "Reparar y Portar con NVIDIA NIM"
+        shell: bash # Usamos bash para el heredoc de Python
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
@@ -48,7 +70,7 @@ jobs:
               api_key=os.environ["NVIDIA_API_KEY"]
           )
 
-          with open("files_list.txt", "r") as f:
+          with open("files_list.txt", "r", encoding="utf-8") as f:
               files = [line.strip() for line in f if line.strip()]
 
           report_file = "Reporte_Reparacion_OperaGX.md"
@@ -63,23 +85,27 @@ jobs:
               prompt = ""
 
               if ext in ['exe', 'dll']:
-                  # Es un binario. Extraemos strings y exports (para DLLs)
+                  # Es un binario
                   strings_file = f"/tmp/{file_name}_strings.txt"
                   exports_file = f"/tmp/{file_name}_exports.txt"
                   
-                  os.system(f"r2 -q -e scr.color=0 -c 'iz' '{file_path}' > {strings_file} 2>/dev/null")
-                  os.system(f"r2 -q -e scr.color=0 -c 'iE' '{file_path}' > {exports_file} 2>/dev/null")
+                  # En Windows, las rutas con espacios deben ir entre comillas
+                  os.system(f'r2 -q -e scr.color=0 -c "iz" "{file_path}" > "{strings_file}" 2>/dev/null')
+                  os.system(f'r2 -q -e scr.color=0 -c "iE" "{file_path}" > "{exports_file}" 2>/dev/null')
                   
-                  with open(strings_file, "r", errors="ignore") as f:
-                      strings_data = f.read()[:3000]
-                  with open(exports_file, "r", errors="ignore") as f:
-                      exports_data = f.read()[:3000]
+                  try:
+                      with open(strings_file, "r", errors="ignore") as f:
+                          strings_data = f.read()[:3000]
+                      with open(exports_file, "r", errors="ignore") as f:
+                          exports_data = f.read()[:3000]
+                  except FileNotFoundError:
+                      strings_data = exports_data = "No data"
                   
                   prompt = f"""
                   Analiza este binario/librería de Windows: "{file_name}".
                   1. Deduce su propósito.
-                  2. Identifica las funciones exportadas clave (si es una DLL) o APIs de sistema críticas.
-                  3. Propón la estrategia exacta para portarlo a Linux (ej. reemplazar por librerías nativas, reescribir en Python/C++, o usar Wine).
+                  2. Identifica funciones exportadas clave (si es DLL) o APIs críticas.
+                  3. Propón la estrategia exacta para portarlo a Linux.
 
                   EXPORTS:
                   {exports_data}
@@ -88,7 +114,7 @@ jobs:
                   {strings_data}
                   """
               else:
-                  # Es un archivo de texto (JSON, INI, XML). Lo leemos directamente.
+                  # Es un archivo de texto (JSON, INI, XML)
                   try:
                       with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                           content = f.read()
@@ -98,12 +124,10 @@ jobs:
                   if len(content) > 5000:
                       content = content[:5000] + "\n...[TRUNCADO]..."
 
-                  # Usamos concatenación de strings para evitar errores con las llaves {} del JSON
                   prompt = (
-                      'Analiza este archivo de configuración/manifiesto de Windows: "' + file_name + '".\n'
-                      'Contiene rutas de Windows, variables de entorno o configuraciones específicas.\n'
-                      '1. Identifica las partes del código que romperán en Linux (ej. "C:\\Windows", "%APPDATA%").\n'
-                      '2. Reescribe el CONTENIDO COMPLETO del archivo adaptándolo a Linux (ej. "/usr/share", "~/.config").\n'
+                      'Analiza este archivo de configuración de Windows: "' + file_name + '".\n'
+                      '1. Identifica las partes del código que romperán en Linux.\n'
+                      '2. Reescribe el CONTENIDO COMPLETO adaptándolo a Linux.\n'
                       '3. Devuelve SOLO el bloque de código reparado.\n\n'
                       'CONTENIDO ORIGINAL:\n```\n' + content + '\n```'
                   )
@@ -144,7 +168,7 @@ jobs:
                           f.write(f"\n\n## Componente: `{file_name}`\n[Error: {str(e)}]\n")
                       success = True
                           
-              # Respetar el límite de 40 RPM (Pausa de 2 segundos)
+              # Pausa de 2 segundos
               time.sleep(2)
 
           print("✅ Proceso de reparación completado.")
