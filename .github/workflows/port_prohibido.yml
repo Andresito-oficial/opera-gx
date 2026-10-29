@@ -180,6 +180,36 @@ jobs:
           
           # Ejecutamos el script
           python nim_analyzer.py
+      - name: "Empaquetar y subir los binarios de Opera GX"
+        if: always()
+        shell: pwsh
+        run: |
+          # Buscamos la carpeta de instalación otra vez
+          $common_paths = @(
+            "$env:LOCALAPPDATA\Programs\Opera GX",
+            "C:\Program Files\Opera GX",
+            "C:\Program Files (x86)\Opera GX"
+          )
+          $install_dir = $null
+          foreach ($path in $common_paths) {
+            if (Test-Path $path) { $install_dir = $path; break }
+          }
+
+          if ($install_dir) {
+            Write-Host "Comprimiendo binarios desde: $install_dir"
+            # Comprimimos la carpeta entera en un archivo .zip
+            Compress-Archive -Path "$install_dir\*" -DestinationPath "OperaGX-Binaries.zip" -Force
+            Write-Host "Binarios comprimidos con éxito."
+          } else {
+            Write-Host "[ERROR] No se encontró la carpeta para comprimir."
+          }
+
+      - name: "Subir binarios al repositorio"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opera-gx-binarios
+          path: OperaGX-Binaries.zip
 
       - name: "Subir reporte de reparación"
         if: always()
