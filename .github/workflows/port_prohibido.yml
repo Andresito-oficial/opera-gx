@@ -5,7 +5,7 @@ on:
 jobs:
   reverse-engineer-and-port:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
 
@@ -13,86 +13,79 @@ jobs:
       - name: "Checkout del repositorio"
         uses: actions/checkout@v4
 
-      - name: "Instalar herramientas (Radare2, 7z, Python)"
+      - name: "Instalar dependencias"
         run: |
+          sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y radare2 p7zip-full wget file python3 python3-pip
+          sudo apt-get install -y \
+            wget file python3 python3-pip \
+            wine64 wine32 xvfb unzip cabextract \
+            radare2 p7zip-full
           pip install openai
 
-      # ==========================================
-      # 1. DESCARGAR Y EXTRAER SOLO WINDOWS
-      # ==========================================
-      - name: "Descargar y extraer Opera GX (Windows)"
+      - name: "Descargar instalador de Opera GX"
         run: |
           set -euxo pipefail
+          mkdir -p work
+          cd work
+          wget -O opera_gx_installer.exe "https://net.geo.opera.com/opera_gx/stable/windows"
+          file opera_gx_installer.exe
 
-          echo "Descargando instalador de Windows..."
-          wget -O opera_gx_win_installer.exe "https://net.geo.opera.com/opera_gx/stable/windows"
+      - name: "Instalar Opera GX con Wine"
+        run: |
+          set -euxo pipefail
+          cd work
 
-          echo "Verificando el tipo de archivo..."
-          file opera_gx_win_installer.exe || true
+          export WINEARCH=win64
+          export WINEPREFIX="$HOME/.wine"
 
-          echo "Creando directorio de extracción..."
-          mkdir -p windows-base
+          # Arranca Wine en un display virtual para que el instalador pueda crear ventanas
+          xvfb-run -a wine64 opera_gx_installer.exe || true
 
-          echo "Extrayendo el instalador inicial..."
-          7z x opera_gx_win_installer.exe -o./windows-base/ -y || true
+          echo "Esperando a que termine la instalación..."
+          sleep 25
 
-          echo "Listando lo que ha quedado dentro del instalador..."
-          find windows-base -maxdepth 6 -type f | sed -n '1,200p' || true
+          echo "Arbol de instalación actual:"
+          find "$HOME/.wine/drive_c" -maxdepth 5 -type f 2>/dev/null | sed -n '1,200p' || true
 
-          echo "Buscando binarios Windows reales dentro del instalador (incluye subdirectorios)..."
-          mapfile -t ALL_EXES < <(find windows-base -type f -iname "*.exe" | sort)
-          echo "Ejecutables encontrados: ${#ALL_EXES[@]}"
-          for exe in "${ALL_EXES[@]}"; do
+      - name: "Localizar el EXE real de Opera GX"
+        run: |
+          set -euxo pipefail
+          cd work
+
+          echo "Buscando exe de Opera / splash / launcher..."
+          mapfile -t EXES < <(find "$HOME/.wine/drive_c" -type f \( -iname "*.exe" -o -iname "*.dll" \) 2>/dev/null | grep -Ei 'opera|splash|launcher|gx' | sort)
+
+          if [ "${#EXES[@]}" -eq 0 ]; then
+            echo "No se encontró ningún exe relacionado con Opera GX en el prefix de Wine."
+            find "$HOME/.wine/drive_c" -maxdepth 8 -type f 2>/dev/null | sed -n '1,200p'
+            exit 1
+          fi
+
+          for exe in "${EXES[@]}"; do
             echo "== $exe =="
             file "$exe" || true
           done
 
-          echo "Intentando localizar el binario principal de Opera/GX o splash screen..."
-          SPLASH_EXE=$(find windows-base -type f \( -iname "*opera*.exe" -o -iname "*splash*.exe" -o -iname "*launcher*.exe" -o -iname "*setup*.exe" \) | head -n 1)
-
-          # Si el instalador trae un paquete interno o un SFX con un segundo exe, lo extraemos también.
-          if [ -z "$SPLASH_EXE" ] && [ "${#ALL_EXES[@]}" -gt 0 ]; then
-            for exe in "${ALL_EXES[@]}"; do
-              if 7z l "$exe" >/dev/null 2>&1; then
-                echo "Intentando extraer contenido anidado desde: $exe"
-                7z x "$exe" -o"windows-base/nested_$(basename "$exe")" -y >/dev/null 2>&1 || true
-              fi
-            done
-            SPLASH_EXE=$(find windows-base -type f \( -iname "*opera*.exe" -o -iname "*splash*.exe" -o -iname "*launcher*.exe" -o -iname "*setup*.exe" \) | head -n 1)
-          fi
+          SPLASH_EXE=$(find "$HOME/.wine/drive_c" -type f \( -iname "*opera*.exe" -o -iname "*splash*.exe" -o -iname "*launcher*.exe" -o -iname "*gx*.exe" \) 2>/dev/null | head -n 1)
 
           if [ -z "$SPLASH_EXE" ]; then
-            echo "No se encontró ningún exe de Opera GX en la extracción. Buscando cualquier PE ejecutable del paquete..."
-            SPLASH_EXE=$(find windows-base -type f -iname "*.exe" | head -n 1)
-          fi
-
-          if [ -z "$SPLASH_EXE" ] || [ ! -f "$SPLASH_EXE" ]; then
-            echo "❌ Error: No se encontró ningún binario para analizar."
-            echo "Esto suele pasar cuando el instalador descargado es un stub o un paquete que embebe un segundo archivo en otra capa."
-            exit 1
+            SPLASH_EXE="${EXES[0]}"
           fi
 
           echo "Archivo seleccionado: $SPLASH_EXE"
           echo "SPLASH_EXE_PATH=$SPLASH_EXE" >> "$GITHUB_ENV"
 
-      # ==========================================
-      # 2. DESCOMPILAR CON RADARE2
-      # ==========================================
-      - name: "Descompilar binario con Radare2"
+      - name: "Descompilar con Radare2"
         run: |
-          echo "Extrayendo strings..."
+          set -euxo pipefail
+          echo "Strings..."
           r2 -q -e scr.color=0 -c "iz > splash_strings.txt" "${{ env.SPLASH_EXE_PATH }}"
-          echo "Analizando función main..."
+          echo "Main..."
           r2 -q -e scr.color=0 -c "aaa; afl; pdf @ main > splash_main_decompiled.txt" "${{ env.SPLASH_EXE_PATH }}"
-          echo "Tamaño de los archivos generados:"
           ls -lh splash_strings.txt splash_main_decompiled.txt
 
-      # ==========================================
-      # 3. NVIDIA NIM GENERA EL CÓDIGO (NEMOTRON)
-      # ==========================================
-      - name: "NVIDIA NIM genera los cambios necesarios para el port"
+      - name: "NVIDIA NIM genera los cambios necesarios"
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
@@ -105,24 +98,24 @@ jobs:
               api_key=os.environ["NVIDIA_API_KEY"]
           )
 
-          with open("splash_main_decompiled.txt", "r") as f:
+          with open("splash_main_decompiled.txt", "r", errors="ignore") as f:
               decompiled_code = f.read()[:15000]
-          with open("splash_strings.txt", "r") as f:
+
+          with open("splash_strings.txt", "r", errors="ignore") as f:
               strings_data = f.read()[:8000]
 
           prompt = f"""
-          Actúa como un experto en ingeniería inversa y desarrollo en Linux.
-          A continuación se muestra el código descompilado de la función 'main' y una lista de strings extraídos de un binario de Windows (Opera GX Splash).
-          Tu tarea es analizar este código y proponer los cambios necesarios para portar su funcionalidad a Linux (por ejemplo, un script de Python que replique el comportamiento del splash screen).
-          Sé conciso y proporciona ejemplos de código claros.
+          Actúa como experto en ingeniería inversa y desarrollo en Linux.
+          Este es un ejecutable Windows real instalado con Wine.
+          Analiza las funciones y strings y propone un port funcional a Linux.
 
-          ### Código Descompilado (main):
+          ### Código de main (descompilado):
           {decompiled_code}
 
-          ### Strings Extraídos:
+          ### Strings extraídos:
           {strings_data}
 
-          ### Propuesta de Port:
+          ### Propuesta de port:
           """
 
           response = client.chat.completions.create(
@@ -134,4 +127,5 @@ jobs:
 
           print(response.choices[0].message.content)
           EOF
+
           python3 nim_analyzer.py
