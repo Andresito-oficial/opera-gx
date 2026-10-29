@@ -1,15 +1,11 @@
-name: Port Prohibido - Análisis Windows y Qwen Code
-
-on:
-  workflow_dispatch:
-
+name: Port Prohibido - Análisis Windows y NVIDIA NIM
+on: workflow_dispatch:
 jobs:
   reverse-engineer-and-port:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
-      models: read # Permiso crucial para usar GitHub Models (Qwen)
 
     steps:
       - name: "Checkout del repositorio"
@@ -28,26 +24,21 @@ jobs:
         run: |
           echo "Descargando instalador de Windows..."
           wget -O opera_gx_win_installer.exe "https://net.geo.opera.com/opera_gx/stable/windows"
-          
           echo "Verificando el tipo de archivo..."
           file opera_gx_win_installer.exe
-          
           echo "Extrayendo el instalador con 7z (adiós problemas de untar)..."
           mkdir -p windows-base
           7z x opera_gx_win_installer.exe -o./windows-base/ -y
-          
           echo "Buscando el splash screen..."
           SPLASH_EXE=$(find windows-base/ -name "opera_gx_splash.exe" | head -n 1)
           if [ -z "$SPLASH_EXE" ]; then
             echo "No se encontró opera_gx_splash.exe, buscando otro binario principal..."
             SPLASH_EXE=$(find windows-base/ -name "opera.exe" | head -n 1)
           fi
-          
           if [ -z "$SPLASH_EXE" ]; then
             echo "❌ Error: No se encontró ningún binario para analizar."
             exit 1
           fi
-          
           echo "Archivo seleccionado: $SPLASH_EXE"
           echo "SPLASH_EXE_PATH=$SPLASH_EXE" >> $GITHUB_ENV
 
@@ -58,93 +49,55 @@ jobs:
         run: |
           echo "Extrayendo strings..."
           r2 -q -e scr.color=0 -c "iz > splash_strings.txt" "${{ env.SPLASH_EXE_PATH }}"
-          
           echo "Analizando función main..."
           r2 -q -e scr.color=0 -c "aaa; afl; pdf @ main > splash_main_decompiled.txt" "${{ env.SPLASH_EXE_PATH }}"
-          
           echo "Tamaño de los archivos generados:"
           ls -lh splash_strings.txt splash_main_decompiled.txt
 
       # ==========================================
-      # 3. QWEN GENERA EL CÓDIGO (Sin API Key manual)
+      # 3. NVIDIA NIM GENERA EL CÓDIGO (NEMOTRON)
       # ==========================================
-      - name: "Qwen genera los cambios necesarios para el port"
+      - name: "NVIDIA NIM genera los cambios necesarios para el port"
         env:
-          # GitHub nos da este token automáticamente, no hace falta configurar nada
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
-          cat << 'EOF' > qwen_analyzer.py
+          cat << 'EOF' > nim_analyzer.py
           import os
           from openai import OpenAI
 
-          # Configurar el cliente para usar GitHub Models (Qwen gratis)
           client = OpenAI(
-              base_url="https://models.inference.ai.azure.com",
-              api_key=os.environ["GITHUB_TOKEN"]
+              base_url="https://integrate.api.nvidia.com/v1",
+              api_key=os.environ["NVIDIA_API_KEY"]
           )
 
-          # Leer los archivos generados por Radare2
           with open("splash_main_decompiled.txt", "r") as f:
-              decompiled_code = f.read()[:15000] # Límite de tokens
-              
+              decompiled_code = f.read()[:15000]
           with open("splash_strings.txt", "r") as f:
               strings_data = f.read()[:8000]
 
           prompt = f"""
-          Actúa como un experto en ingeniería inversa de software y desarrollo en C/C++.
-          Tengo el código descompilado de un binario de Windows (opera_gx_splash.exe).
-          Quiero portarlo a Linux o crear un parche para evitar depender de las APIs de Windows.
+          Actúa como un experto en ingeniería inversa y desarrollo en Linux.
+          A continuación se muestra el código descompilado de la función 'main' y una lista de strings extraídos de un binario de Windows (Opera GX Splash).
+          Tu tarea es analizar este código y proponer los cambios necesarios para portar su funcionalidad a Linux (por ejemplo, un script de Python que replique el comportamiento del splash screen).
+          Sé conciso y proporciona ejemplos de código claros.
 
-          Aquí tienes los Strings encontrados:
-          {strings_data}
-
-          Aquí tienes la función principal descompilada:
+          ### Código Descompilado (main):
           {decompiled_code}
 
-          Por favor:
-          1. Analiza la lógica del binario.
-          2. Escribe el código en C o C++ necesario para replicar esta funcionalidad nativamente en Linux.
-          3. Si ves llamadas a la API de Windows (como CreateWindow, ShellExecute, etc.), escribe sus equivalentes en GTK, Qt o llamadas POSIX.
-          4. Explica brevemente qué hace el splash screen basándote en el código.
+          ### Strings Extraídos:
+          {strings_data}
+
+          ### Propuesta de Port:
           """
 
-          print("Enviando datos a Qwen (vía GitHub Models)...")
-          try:
-              response = client.chat.completions.create(
-                  model="qwen2.5-coder-32b-instruct", # Modelo Qwen disponible en GitHub
-                  messages=[
-                      {"role": "system", "content": "Eres un experto en reversing y portabilidad de software."},
-                      {"role": "user", "content": prompt}
-                  ],
-                  temperature=0.2
-              )
-              
-              with open("qwen_port_strategy.md", "w") as out:
-                  out.write(response.choices[0].message.content)
-              print("✅ Código y estrategia generados con éxito.")
-          except Exception as e:
-              print(f"❌ Error contactando con Qwen: {e}")
-              with open("qwen_port_strategy.md", "w") as out:
-                  out.write(f"# Error\nNo se pudo generar el código. Detalles: {e}")
+          # Uso del modelo Nemotron 120B de NVIDIA
+          response = client.chat.completions.create(
+              model="nvidia/nemotron-3-super-120b-a12b",
+              messages=[{"role": "user", "content": prompt}],
+              temperature=0.2,
+              max_tokens=4096
+          )
+
+          print(response.choices[0].message.content)
           EOF
-          
-          python3 qwen_analyzer.py
-
-      # ==========================================
-      # 4. EMPAQUETAR RESULTADOS
-      # ==========================================
-      - name: "Empaquetar resultados del port"
-        run: |
-          mkdir -p dist
-          cp splash_main_decompiled.txt dist/
-          cp splash_strings.txt dist/
-          cp qwen_port_strategy.md dist/
-          
-          tar -czvf dist/Opera-GX-Qwen-Port.tar.gz -C dist/ .
-          echo "¡Paquete listo para descargar!"
-
-      - name: "Subir artefacto"
-        uses: actions/upload-artifact@v4
-        with:
-          name: Opera-GX-Port-Completo
-          path: dist/Opera-GX-Qwen-Port.tar.gz
+          python3 nim_analyzer.py
